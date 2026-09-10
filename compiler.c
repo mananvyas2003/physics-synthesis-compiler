@@ -1,5 +1,6 @@
 #include "compiler.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -427,4 +428,277 @@ int compiler_write_kicad_sch(const char *filename,
 
   fclose(fp);
   return 1;
+}
+
+/* =========================================================
+ * Physics2 design IR + lowering
+ * ========================================================= */
+
+void compiler_physics_design_init(CompilerPhysDesign *design) {
+  if (!design)
+    return;
+
+  design->elements = NULL;
+  design->count = 0;
+  design->capacity = 0;
+}
+
+void compiler_physics_design_free(CompilerPhysDesign *design) {
+  if (!design)
+    return;
+
+  free(design->elements);
+  design->elements = NULL;
+  design->count = 0;
+  design->capacity = 0;
+}
+
+bool compiler_physics_design_add(CompilerPhysDesign *design,
+                                 CompilerPhysKind kind, const char *name,
+                                 double value, double tolerance_pct,
+                                 const char *const *terminals,
+                                 uint8_t terminal_count) {
+  CompilerPhysElement *elements;
+  CompilerPhysElement *element;
+  uint8_t i;
+  size_t capacity;
+
+  if (!design || !name || !terminals)
+    return false;
+
+  if (kind == COMPILER_PHYS_NONE)
+    return false;
+
+  if (terminal_count == 0 || terminal_count > PHYSICS2_MAX_TERMINALS)
+    return false;
+
+  if (!isfinite(value) || !isfinite(tolerance_pct) || tolerance_pct < 0.0)
+    return false;
+
+  switch (kind) {
+  case COMPILER_PHYS_RESISTOR:
+  case COMPILER_PHYS_CAPACITOR:
+  case COMPILER_PHYS_INDUCTOR:
+    if (value <= 0.0 || terminal_count != 2)
+      return false;
+    break;
+  case COMPILER_PHYS_VSOURCE:
+  case COMPILER_PHYS_ISOURCE:
+    if (terminal_count != 2)
+      return false;
+    break;
+  default:
+    return false;
+  }
+
+  for (i = 0; i < terminal_count; i++) {
+    if (!terminals[i] || terminals[i][0] == '\0')
+      return false;
+  }
+
+  if (design->count == design->capacity) {
+    capacity = design->capacity ? design->capacity * 2 : 8;
+
+    if (capacity < design->capacity)
+      return false;
+
+    elements = realloc(design->elements, capacity * sizeof(*elements));
+
+    if (!elements)
+      return false;
+
+    design->elements = elements;
+    design->capacity = capacity;
+  }
+
+  element = &design->elements[design->count];
+  memset(element, 0, sizeof(*element));
+
+  element->kind = kind;
+  strncpy(element->name, name, sizeof(element->name) - 1);
+  element->name[sizeof(element->name) - 1] = '\0';
+  element->value = value;
+  element->tolerance_pct = tolerance_pct;
+  element->terminal_count = terminal_count;
+
+  for (i = 0; i < terminal_count; i++) {
+    strncpy(element->terminals[i], terminals[i],
+            sizeof(element->terminals[i]) - 1);
+    element->terminals[i][sizeof(element->terminals[i]) - 1] = '\0';
+  }
+
+  design->count++;
+  return true;
+}
+
+typedef struct {
+  char name[64];
+  NodeId id;
+} CompilerNodeMapEntry;
+
+typedef struct {
+  CompilerNodeMapEntry *items;
+  size_t count;
+  size_t capacity;
+} CompilerNodeMap;
+
+static void compiler_node_map_init(CompilerNodeMap *map) {
+  if (!map)
+    return;
+
+  map->items = NULL;
+  map->count = 0;
+  map->capacity = 0;
+}
+
+static void compiler_node_map_free(CompilerNodeMap *map) {
+  if (!map)
+    return;
+
+  free(map->items);
+  map->items = NULL;
+  map->count = 0;
+  map->capacity = 0;
+}
+
+static bool compiler_node_map_get_or_add(CompilerNodeMap *map,
+                                         PhysicsProgram *program,
+                                         const char *name, NodeId *out_id) {
+  size_t i;
+  CompilerNodeMapEntry *items;
+  size_t capacity;
+  NodeId id;
+
+  if (!map || !program || !name || !out_id)
+    return false;
+
+  for (i = 0; i < map->count; i++) {
+    if (strcmp(map->items[i].name, name) == 0) {
+      *out_id = map->items[i].id;
+      return true;
+    }
+  }
+
+  id = physics2_program_new_node(program);
+
+  if (id == PHYSICS2_NODE_NONE)
+    return false;
+
+  if (map->count == map->capacity) {
+    capacity = map->capacity ? map->capacity * 2 : 8;
+
+    if (capacity < map->capacity)
+      return false;
+
+    items = realloc(map->items, capacity * sizeof(*items));
+
+    if (!items)
+      return false;
+
+    map->items = items;
+    map->capacity = capacity;
+  }
+
+  strncpy(map->items[map->count].name, name,
+          sizeof(map->items[map->count].name) - 1);
+  map->items[map->count].name[sizeof(map->items[map->count].name) - 1] = '\0';
+  map->items[map->count].id = id;
+  map->count++;
+
+  *out_id = id;
+  return true;
+}
+
+static bool compiler_init_element_primitive(const CompilerPhysElement *element,
+                                            PhysicsPrimitive *primitive) {
+  if (!element || !primitive)
+    return false;
+
+  switch (element->kind) {
+  case COMPILER_PHYS_RESISTOR:
+    return physics2_primitive_init_resistor(primitive, element->name,
+                                            element->value,
+                                            element->tolerance_pct);
+  case COMPILER_PHYS_CAPACITOR:
+    return physics2_primitive_init_capacitor(primitive, element->name,
+                                             element->value,
+                                             element->tolerance_pct);
+  case COMPILER_PHYS_INDUCTOR:
+    return physics2_primitive_init_inductor(primitive, element->name,
+                                            element->value,
+                                            element->tolerance_pct);
+  case COMPILER_PHYS_VSOURCE:
+    return physics2_primitive_init_vsource(primitive, element->name,
+                                           element->value,
+                                           element->tolerance_pct);
+  case COMPILER_PHYS_ISOURCE:
+    return physics2_primitive_init_isource(primitive, element->name,
+                                           element->value,
+                                           element->tolerance_pct);
+  default:
+    return false;
+  }
+}
+
+void compiler_free_physics_program(CompiledPhysicsProgram *compiled) {
+  if (!compiled)
+    return;
+
+  physics2_program_free(&compiled->program);
+  free(compiled->primitives);
+  compiled->primitives = NULL;
+  compiled->primitive_count = 0;
+}
+
+bool compiler_lower_to_physics2(const CompilerPhysDesign *design,
+                                CompiledPhysicsProgram *out) {
+  CompilerNodeMap nodes;
+  size_t i;
+  uint8_t t;
+  NodeId terminal_ids[PHYSICS2_MAX_TERMINALS];
+
+  if (!design || !out)
+    return false;
+
+  memset(out, 0, sizeof(*out));
+  compiler_node_map_init(&nodes);
+  physics2_program_init(&out->program);
+
+  if (design->count == 0)
+    goto fail;
+
+  out->primitives = calloc(design->count, sizeof(*out->primitives));
+
+  if (!out->primitives)
+    goto fail;
+
+  out->primitive_count = design->count;
+
+  for (i = 0; i < design->count; i++) {
+    const CompilerPhysElement *element = &design->elements[i];
+
+    if (!compiler_init_element_primitive(element, &out->primitives[i]))
+      goto fail;
+
+    for (t = 0; t < element->terminal_count; t++) {
+      if (!compiler_node_map_get_or_add(&nodes, &out->program,
+                                        element->terminals[t],
+                                        &terminal_ids[t]))
+        goto fail;
+    }
+
+    if (physics2_program_add_primitive(&out->program, &out->primitives[i],
+                                       terminal_ids,
+                                       element->terminal_count) ==
+        PHYSICS_PRIMITIVE_NONE)
+      goto fail;
+  }
+
+  compiler_node_map_free(&nodes);
+  return true;
+
+fail:
+  compiler_node_map_free(&nodes);
+  compiler_free_physics_program(out);
+  return false;
 }

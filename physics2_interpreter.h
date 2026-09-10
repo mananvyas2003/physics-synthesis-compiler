@@ -50,6 +50,19 @@ typedef struct {
   PhysicsValue gain;
 } PhysicsControlledSource;
 
+/*
+ * Diode model data only.
+ *
+ * A correct Shockley linearization requires residual/Jacobian
+ * (or equivalent) support from the runtime. Until that ABI
+ * exists, stamp() must fail as unsupported-nonlinear.
+ */
+typedef struct {
+  PhysicsValue isat;
+  double n;
+  double vt;
+} PhysicsDiode;
+
 typedef struct {
   uint8_t input_count;
   uint8_t output_count;
@@ -58,10 +71,29 @@ typedef struct {
   size_t truth_table_size;
 } PhysicsLogicGate;
 
+typedef enum {
+  PHYS_XSTR_NONE = 0,
+  PHYS_XSTR_BJT,
+  PHYS_XSTR_NMOS,
+  PHYS_XSTR_PMOS
+} PhysicsTransistorSubtype;
+
+/*
+ * Transistor connectivity/model placeholders only.
+ * Full device equations require the missing nonlinear runtime ABI.
+ */
+typedef struct {
+  PhysicsTransistorSubtype subtype;
+  PhysicsValue scale;
+  uint8_t terminal_count;
+} PhysicsTransistor;
+
 typedef union {
   PhysicsTwoTerminal two_terminal;
   PhysicsControlledSource controlled_source;
+  PhysicsDiode diode;
   PhysicsLogicGate logic_gate;
+  PhysicsTransistor transistor;
 } PhysicsPrimitivePayload;
 
 /* =========================================================
@@ -127,6 +159,49 @@ bool physics2_primitive_init_capacitor(PhysicsPrimitive *primitive,
 bool physics2_primitive_init_vsource(PhysicsPrimitive *primitive,
                                      const char *name, double voltage_v,
                                      double tolerance_pct);
+
+bool physics2_primitive_init_inductor(PhysicsPrimitive *primitive,
+                                      const char *name, double inductance_h,
+                                      double tolerance_pct);
+
+bool physics2_primitive_init_isource(PhysicsPrimitive *primitive,
+                                     const char *name, double current_a,
+                                     double tolerance_pct);
+
+bool physics2_primitive_init_vcvs(PhysicsPrimitive *primitive, const char *name,
+                                  double gain, double tolerance_pct);
+
+bool physics2_primitive_init_vccs(PhysicsPrimitive *primitive, const char *name,
+                                  double gain, double tolerance_pct);
+
+bool physics2_primitive_init_ccvs(PhysicsPrimitive *primitive, const char *name,
+                                  double gain, double tolerance_pct);
+
+bool physics2_primitive_init_cccs(PhysicsPrimitive *primitive, const char *name,
+                                  double gain, double tolerance_pct);
+
+bool physics2_primitive_init_diode(PhysicsPrimitive *primitive, const char *name,
+                                   double isat_a, double n, double vt_v,
+                                   double tolerance_pct);
+
+/*
+ * Structural logic-gate data only.
+ * Caller owns truth_table memory. No digital event/timing ABI.
+ */
+bool physics2_primitive_init_logic_gate(PhysicsPrimitive *primitive,
+                                        const char *name, uint8_t input_count,
+                                        uint8_t output_count,
+                                        uint8_t *truth_table,
+                                        size_t truth_table_size);
+
+bool physics2_primitive_init_bjt(PhysicsPrimitive *primitive, const char *name,
+                                 double scale, double tolerance_pct);
+
+bool physics2_primitive_init_nmos(PhysicsPrimitive *primitive, const char *name,
+                                  double scale, double tolerance_pct);
+
+bool physics2_primitive_init_pmos(PhysicsPrimitive *primitive, const char *name,
+                                  double scale, double tolerance_pct);
 
 /* =========================================================
  * Accumulator
@@ -197,6 +272,7 @@ PrimitiveId physics2_program_add_primitive(PhysicsProgram *program,
 
 typedef struct {
   double capacitor_previous_voltage;
+  double inductor_previous_current;
 } PhysicsPrimitiveState;
 
 /* =========================================================
