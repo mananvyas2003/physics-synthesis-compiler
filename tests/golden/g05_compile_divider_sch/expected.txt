@@ -1,0 +1,6 @@
+g05_compile_divider_sch
+label=VIN
+label=VOUT
+label=GND
+placed_refs=2
+labels=3

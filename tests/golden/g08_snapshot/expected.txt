@@ -1,0 +1,4 @@
+g08_snapshot
+schema=design-snapshot.v1
+topology=resistor_divider
+components=2

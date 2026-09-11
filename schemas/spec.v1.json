@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://physics-synthesis.local/schemas/spec.v1.json",
+  "title": "spec.v1",
+  "type": "object",
+  "required": ["rails", "current_a", "efficiency_target", "form_factor"],
+  "properties": {
+    "rails": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "current_a": { "type": "number", "minimum": 0 },
+    "ripple_v": { "type": "number", "minimum": 0 },
+    "efficiency_target": { "type": "number", "minimum": 0, "maximum": 1 },
+    "form_factor": { "type": "string", "minLength": 1 },
+    "part_preference": { "type": "string" },
+    "required_interfaces": { "type": "array", "items": { "type": "string" } },
+    "inferred": {
+      "type": "object",
+      "additionalProperties": { "type": "boolean" }
+    }
+  },
+  "additionalProperties": true
+}

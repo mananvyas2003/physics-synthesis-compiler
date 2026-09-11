@@ -19,6 +19,12 @@ typedef struct {
 
   char node1[64];
   char node2[64];
+
+  /* M4 scored binding metadata */
+  char rationale[256];
+  char alternate_mpn[64];
+  int has_alternate;
+  double unit_cost;
 } CompiledComponent;
 
 typedef struct {

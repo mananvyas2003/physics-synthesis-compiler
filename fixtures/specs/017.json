@@ -1,0 +1,10 @@
+{
+  "rails": ["5V"],
+  "current_a": 0.85,
+  "ripple_v": 0.05,
+  "efficiency_target": 0.87,
+  "form_factor": "pcb_017",
+  "part_preference": "basic",
+  "required_interfaces": ["power"],
+  "inferred": { "current_a": false, "efficiency_target": false }
+}

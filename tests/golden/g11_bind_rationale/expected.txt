@@ -1,0 +1,4 @@
+g11_bind_rationale
+with_rationale=2
+with_alternate=2
+cost_ok=1

@@ -1,0 +1,23 @@
+{
+  "id": "usb_c_sink",
+  "ports": [
+    {
+      "name": "vbus_out",
+      "kind": "power_out",
+      "electrical": {
+        "voltage": { "min": 4.75, "max": 5.25 },
+        "current": { "min": 0.0, "max": 3.0 },
+        "impedance_ohms": 0.05
+      }
+    },
+    {
+      "name": "gnd",
+      "kind": "gnd",
+      "electrical": {
+        "voltage": { "min": 0, "max": 0 },
+        "current": { "min": 0, "max": 0 },
+        "impedance_ohms": 0
+      }
+    }
+  ]
+}

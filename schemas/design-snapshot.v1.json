@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://physics-synthesis.local/schemas/design-snapshot.v1.json",
+  "title": "design-snapshot.v1",
+  "type": "object",
+  "required": ["schema", "generator", "generator_version", "topology", "components", "nets"],
+  "properties": {
+    "schema": { "const": "design-snapshot.v1" },
+    "generator": { "type": "string" },
+    "generator_version": { "type": "string" },
+    "topology": { "type": "string" },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["role", "refdes", "mpn", "value", "package", "qty"],
+        "properties": {
+          "role": { "type": "string" },
+          "refdes": { "type": "string" },
+          "mpn": { "type": "string" },
+          "value": { "type": "number" },
+          "package": { "type": "string" },
+          "qty": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "nets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "pins"],
+        "properties": {
+          "name": { "type": "string" },
+          "pins": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,3 @@
+g09_spec_corpus
+valid=30
+invalid=0

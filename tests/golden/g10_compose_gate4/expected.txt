@@ -1,0 +1,3 @@
+g10_compose_gate4
+blocks=5
+composition_ok=1

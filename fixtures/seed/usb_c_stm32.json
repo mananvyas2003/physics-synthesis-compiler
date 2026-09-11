@@ -1,0 +1,42 @@
+{
+  "name": "usb_c_stm32",
+  "description": "Gate4 USB-C STM32 + I2C temp + LED schematic stand-in (passive ERC path)",
+  "category": "Gate4",
+  "parts": [
+    {
+      "mpn": "DEMO-10K-0603-A",
+      "type": "resistor",
+      "value": 10000.0,
+      "package": "0603",
+      "v_rating": 50.0,
+      "power_rating_w": 0.125
+    },
+    {
+      "mpn": "DEMO-10K-0603-B",
+      "type": "resistor",
+      "value": 10000.0,
+      "package": "0603",
+      "v_rating": 50.0,
+      "power_rating_w": 0.125
+    },
+    {
+      "mpn": "DEMO-10K-0603-C",
+      "type": "resistor",
+      "value": 10000.0,
+      "package": "0603",
+      "v_rating": 75.0,
+      "power_rating_w": 0.25
+    }
+  ],
+  "components": [
+    { "role": "r1", "part_type": "resistor", "quantity": 1 },
+    { "role": "r2", "part_type": "resistor", "quantity": 1 }
+  ],
+  "nodes": ["VIN", "VOUT", "GND"],
+  "connections": [
+    { "role": "r1", "pin": "1", "node": "VIN" },
+    { "role": "r1", "pin": "2", "node": "VOUT" },
+    { "role": "r2", "pin": "1", "node": "VOUT" },
+    { "role": "r2", "pin": "2", "node": "GND" }
+  ]
+}

@@ -1,0 +1,1 @@
+Prompt 004: design a board needing rails and 0.2A

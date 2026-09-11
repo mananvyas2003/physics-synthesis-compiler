@@ -1,0 +1,3 @@
+g04_dfm_suite
+dfm_failures=0
+cases=compatible,voltage_mismatch,current_mismatch,source_to_source,ground,composition

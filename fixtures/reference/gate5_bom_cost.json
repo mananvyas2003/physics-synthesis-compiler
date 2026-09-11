@@ -1,0 +1,6 @@
+{
+  "design": "fixtures/seed/resistor_divider.json",
+  "hand_reference_total_usd": 0.022,
+  "max_relative_error": 0.15,
+  "notes": "Two 10k 0603 lines; hand-picked A+B style pricing (~0.010+0.012)."
+}

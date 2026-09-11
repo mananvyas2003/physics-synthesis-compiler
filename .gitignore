@@ -1,0 +1,12 @@
+/build/
+/build-asan/
+/*.o
+/*.exe
+/*.db
+/golden_actual_*.txt
+/golden_g05_tmp.*
+/t.db
+/t.kicad_sch
+/generated_resistor_divider.kicad_sch
+.vscode/
+.idea/

@@ -1,0 +1,2 @@
+g03_three_resistor
+Vout=6.5454545455

@@ -1,0 +1,3 @@
+g06_generate_net
+components=2
+nets=3

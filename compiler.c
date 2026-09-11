@@ -1,5 +1,7 @@
 #include "compiler.h"
 
+#include "bind_scorer.h"
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -111,12 +113,21 @@ DBResult compiler_compile_resistor_divider(DB *db, const char *topology_name,
 
     strncpy(cc->node2, node2, sizeof(cc->node2) - 1);
 
-    result = DB_FindClosestPart(db, PART_RESISTOR, 10000.0, "0603",
-                                TOLERANCE_E96, &cc->part);
-
-    if (result != DB_OK) {
-      compiler_free_schematic(out);
-      return result;
+    {
+      BindChoice choice;
+      /* Divider fixture: ~5 V across each 10k at 10 V excitation. */
+      if (bind_score_passive(db, PART_RESISTOR, 10000.0, "0603", TOLERANCE_E96,
+                             5.0, 0.0025, &choice) != 0) {
+        compiler_free_schematic(out);
+        return DB_NOT_FOUND;
+      }
+      cc->part = choice.primary;
+      strncpy(cc->rationale, choice.rationale, sizeof(cc->rationale) - 1);
+      cc->unit_cost = choice.unit_cost;
+      cc->has_alternate = choice.has_alternate;
+      if (choice.has_alternate)
+        strncpy(cc->alternate_mpn, choice.alternate.mpn,
+                sizeof(cc->alternate_mpn) - 1);
     }
 
     out->component_count++;
@@ -377,13 +388,19 @@ static void write_label(FILE *fp, const char *text, double x, double y,
 
 int compiler_write_kicad_sch(const char *filename,
                              const CompiledSchematic *schematic) {
+  FILE *fp;
+  int i;
+  char uuid[64];
+  char pin1_uuid[64];
+  char pin2_uuid[64];
+
   if (!filename || !schematic)
     return 0;
 
-  if (schematic->component_count != 2)
+  if (schematic->component_count <= 0)
     return 0;
 
-  FILE *fp = fopen(filename, "w");
+  fp = fopen(filename, "w");
   if (!fp)
     return 0;
 
@@ -398,25 +415,49 @@ int compiler_write_kicad_sch(const char *filename,
   write_resistor_library_symbol(fp);
   fprintf(fp, "\t)\n");
 
-  const CompiledComponent *r1 = &schematic->components[0];
-  const CompiledComponent *r2 = &schematic->components[1];
+  /*
+   * Special-case the validated 2-resistor divider layout so g05 stays stable.
+   * Otherwise place components on a vertical naive grid.
+   */
+  if (schematic->component_count == 2 &&
+      strcmp(schematic->components[0].node1, "VIN") == 0 &&
+      strcmp(schematic->components[0].node2, "VOUT") == 0 &&
+      strcmp(schematic->components[1].node1, "VOUT") == 0 &&
+      strcmp(schematic->components[1].node2, "GND") == 0) {
+    const CompiledComponent *r1 = &schematic->components[0];
+    const CompiledComponent *r2 = &schematic->components[1];
 
-  write_placed_resistor(fp, r1, 100, 80, "00000000-0000-4000-8000-000000000101",
-                        "00000000-0000-4000-8000-000000000111",
-                        "00000000-0000-4000-8000-000000000112");
-
-  write_placed_resistor(fp, r2, 100, 110,
-                        "00000000-0000-4000-8000-000000000102",
-                        "00000000-0000-4000-8000-000000000121",
-                        "00000000-0000-4000-8000-000000000122");
-
-  write_wire(fp, 100, 76.19, 100, 65.00, 201);
-  write_wire(fp, 100, 83.81, 100, 106.19, 202);
-  write_wire(fp, 100, 113.81, 100, 125.00, 203);
-
-  write_label(fp, "VIN", 100, 65, 301);
-  write_label(fp, "VOUT", 100, 95, 302);
-  write_label(fp, "GND", 100, 125, 303);
+    write_placed_resistor(fp, r1, 100, 80,
+                          "00000000-0000-4000-8000-000000000101",
+                          "00000000-0000-4000-8000-000000000111",
+                          "00000000-0000-4000-8000-000000000112");
+    write_placed_resistor(fp, r2, 100, 110,
+                          "00000000-0000-4000-8000-000000000102",
+                          "00000000-0000-4000-8000-000000000121",
+                          "00000000-0000-4000-8000-000000000122");
+    write_wire(fp, 100, 76.19, 100, 65.00, 201);
+    write_wire(fp, 100, 83.81, 100, 106.19, 202);
+    write_wire(fp, 100, 113.81, 100, 125.00, 203);
+    write_label(fp, "VIN", 100, 65, 301);
+    write_label(fp, "VOUT", 100, 95, 302);
+    write_label(fp, "GND", 100, 125, 303);
+  } else {
+    for (i = 0; i < schematic->component_count; i++) {
+      double x = 100.0 + (i % 4) * 40.0;
+      double y = 80.0 + (i / 4) * 30.0;
+      make_uuid(uuid, sizeof(uuid), (unsigned)(100 + i));
+      make_uuid(pin1_uuid, sizeof(pin1_uuid), (unsigned)(200 + i * 2));
+      make_uuid(pin2_uuid, sizeof(pin2_uuid), (unsigned)(201 + i * 2));
+      write_placed_resistor(fp, &schematic->components[i], x, y, uuid, pin1_uuid,
+                            pin2_uuid);
+      write_label(fp, schematic->components[i].node1, x, y - 15.0,
+                  (unsigned)(300 + i * 2));
+      write_label(fp, schematic->components[i].node2, x, y + 15.0,
+                  (unsigned)(301 + i * 2));
+      if (i + 1 < schematic->component_count)
+        write_wire(fp, x, y + 3.81, x, y + 30.0 - 3.81, (unsigned)(400 + i));
+    }
+  }
 
   fprintf(fp, "\t(sheet_instances\n"
               "\t\t(path \"/\"\n"

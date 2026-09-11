@@ -1,0 +1,5 @@
+g07_generate_bom
+header=1
+rationale_col=1
+alternate_col=1
+rows=2

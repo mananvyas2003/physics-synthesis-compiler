@@ -1,0 +1,3 @@
+g12_verify_report
+passed=1
+rating_violations=0
