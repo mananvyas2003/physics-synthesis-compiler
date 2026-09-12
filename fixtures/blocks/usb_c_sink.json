@@ -19,5 +19,20 @@
         "impedance_ohms": 0
       }
     }
-  ]
+  ],
+  "expand": {
+    "parts": [
+      { "mpn": "DEMO-5K1-0603-A", "type": "resistor", "value": 5100.0, "package": "0603", "v_rating": 50.0, "power_rating_w": 0.125 },
+      { "mpn": "DEMO-5K1-0603-B", "type": "resistor", "value": 5100.0, "package": "0603", "v_rating": 50.0, "power_rating_w": 0.125 }
+    ],
+    "components": [
+      { "role": "cc", "part_type": "resistor", "quantity": 1, "target_value": 5100.0, "package": "0603" }
+    ],
+    "nodes": ["VBUS", "GND"],
+    "connections": [
+      { "role": "cc", "pin": "1", "node": "VBUS" },
+      { "role": "cc", "pin": "2", "node": "GND" }
+    ],
+    "port_nets": { "vbus_out": "VBUS", "gnd": "GND" }
+  }
 }

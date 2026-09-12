@@ -1,0 +1,31 @@
+{
+	"schema":	"design-snapshot.v1",
+	"generator":	"physics-synthesis-compiler",
+	"generator_version":	"0.1.0",
+	"topology":	"schematic_001",
+	"components":	[{
+			"role":	"r1",
+			"refdes":	"r1",
+			"mpn":	"DEMO-10K-0603-A",
+			"value":	10000,
+			"package":	"0603",
+			"qty":	1
+		}, {
+			"role":	"r2",
+			"refdes":	"r2",
+			"mpn":	"DEMO-10K-0603-A",
+			"value":	10000,
+			"package":	"0603",
+			"qty":	1
+		}],
+	"nets":	[{
+			"name":	"VIN",
+			"pins":	["r1.1"]
+		}, {
+			"name":	"VOUT",
+			"pins":	["r1.2", "r2.1"]
+		}, {
+			"name":	"GND",
+			"pins":	["r2.2"]
+		}]
+}

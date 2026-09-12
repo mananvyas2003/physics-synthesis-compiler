@@ -47,3 +47,40 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           SYNTH_FIXTURE_ROOT: ${{ github.workspace }}
         run: ctest --test-dir build-asan --output-on-failure
+
+  kicad-erc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential
+
+      - name: Configure and build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build
+
+      - name: Install KiCad CLI
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y kicad || \
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y kicad-cli || true
+          command -v kicad-cli
+          kicad-cli version || kicad-cli --version || true
+
+      - name: Real KiCad ERC (divider + compose-gate4)
+        env:
+          SYNTH_FIXTURE_ROOT: ${{ github.workspace }}
+          SYNTH_BIN: ${{ github.workspace }}/build/synth
+        run: |
+          chmod +x scripts/run_kicad_erc.sh
+          scripts/run_kicad_erc.sh "${GITHUB_WORKSPACE}/out_erc"
+
+      - name: Upload ERC reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kicad-erc-reports
+          path: out_erc/**/*.rpt
+          if-no-files-found: ignore

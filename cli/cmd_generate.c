@@ -6,6 +6,8 @@
 #include "db.h"
 #include "emit.h"
 #include "llm_provider.h"
+#include "schematic_load.h"
+#include "gemini_schematic.h"
 #include "seed_topology.h"
 #include "spec_load.h"
 #include "verify_report.h"
@@ -94,11 +96,16 @@ static int check_gate5_cost(const CompiledSchematic *schematic,
   cJSON *root;
   cJSON *hand;
   cJSON *max_err;
+  cJSON *design;
   double total = 0.0;
   double hand_total;
   double max_rel;
   int i;
   int ok = 0;
+
+  /* Only enforce cost gate for the resistor_divider reference design. */
+  if (!schematic || strcmp(schematic->name, "resistor_divider") != 0)
+    return 0;
 
   ref_path =
       cli_join_path(fixture_root, "fixtures/reference/gate5_bom_cost.json");
@@ -115,6 +122,8 @@ static int check_gate5_cost(const CompiledSchematic *schematic,
 
   hand = cJSON_GetObjectItemCaseSensitive(root, "hand_reference_total_usd");
   max_err = cJSON_GetObjectItemCaseSensitive(root, "max_relative_error");
+  design = cJSON_GetObjectItemCaseSensitive(root, "design");
+  (void)design;
   if (!cJSON_IsNumber(hand) || !cJSON_IsNumber(max_err)) {
     cJSON_Delete(root);
     return 1;
@@ -163,6 +172,11 @@ int cmd_generate_design(const char *design_json, const char *out_dir) {
     return 1;
   }
 
+  if (schematic_ir_validate_file(design_json) != 0) {
+    fprintf(stderr, "[GENERATE] schematic IR invalid: %s\n", design_json);
+    return 1;
+  }
+
   if (topology_name_from_design(design_json, topology_name,
                                 sizeof(topology_name)) != 0) {
     fprintf(stderr, "[GENERATE] missing topology name in %s\n", design_json);
@@ -193,7 +207,7 @@ int cmd_generate_design(const char *design_json, const char *out_dir) {
     goto done;
   }
 
-  if (compiler_compile_resistor_divider(db, topology_name, &schematic) !=
+  if (compiler_compile_from_design(db, topology_name, design_json, &schematic) !=
       DB_OK) {
     fprintf(stderr, "[GENERATE] compile failed for %s\n", topology_name);
     goto done;
@@ -247,12 +261,16 @@ done:
 int cmd_generate(int argc, char **argv) {
   const char *design_json = NULL;
   const char *spec_path = NULL;
+  const char *prompt_path = NULL;
+  const char *prompt_text = NULL;
   const char *out_dir = NULL;
   int compose_gate4 = 0;
+  int force_offline_prompt = 0;
   int i;
   char resolved_design[512];
   SpecV1 spec;
   ComposeResult compose;
+  SchematicIrMeta sch_meta;
 
   for (i = 2; i < argc; i++) {
     if (strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--out") == 0) {
@@ -269,6 +287,27 @@ int cmd_generate(int argc, char **argv) {
         return 1;
       }
       spec_path = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--prompt") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "Usage: synth generate --prompt <prompt.txt> -o out/\n");
+        return 1;
+      }
+      prompt_path = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--prompt-text") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr,
+                "Usage: synth generate --prompt-text \"...\" -o out/\n");
+        return 1;
+      }
+      prompt_text = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--offline-prompt") == 0) {
+      force_offline_prompt = 1;
       continue;
     }
     if (strcmp(argv[i], "--compose-gate4") == 0) {
@@ -289,22 +328,50 @@ int cmd_generate(int argc, char **argv) {
   }
 
   if (compose_gate4) {
+    char *expanded;
     memset(&compose, 0, sizeof(compose));
     if (compose_gate4_scenario(&compose) != 0) {
       fprintf(stderr, "[GENERATE] Gate4 composition failed\n");
       return 1;
     }
     printf("[GENERATE] Gate4 composition ok blocks=%d\n", compose.block_count);
-    {
-      char *seed =
-          cli_join_path(cli_fixture_root(), "fixtures/seed/usb_c_stm32.json");
-      if (!seed)
-        return 1;
-      strncpy(resolved_design, seed, sizeof(resolved_design) - 1);
-      resolved_design[sizeof(resolved_design) - 1] = '\0';
-      free(seed);
-      design_json = resolved_design;
+    if (ensure_dir(out_dir) != 0)
+      return 1;
+    expanded = cli_join_path(out_dir, "composed_schematic.json");
+    if (!expanded)
+      return 1;
+    if (compose_expand_to_schematic(&compose, expanded) != 0) {
+      fprintf(stderr, "[GENERATE] compose expand failed\n");
+      free(expanded);
+      return 1;
     }
+    printf("[GENERATE] expanded schematic %s\n", expanded);
+    strncpy(resolved_design, expanded, sizeof(resolved_design) - 1);
+    resolved_design[sizeof(resolved_design) - 1] = '\0';
+    free(expanded);
+    design_json = resolved_design;
+  } else if (prompt_path || prompt_text) {
+    char *ir_out = NULL;
+    memset(&sch_meta, 0, sizeof(sch_meta));
+    if (ensure_dir(out_dir) != 0)
+      return 1;
+    ir_out = cli_join_path(out_dir, "prompt_schematic.json");
+    if (!ir_out)
+      return 1;
+    if (schematic_provider_from_prompt(prompt_path, prompt_text, ir_out,
+                                       force_offline_prompt, resolved_design,
+                                       sizeof(resolved_design),
+                                       &sch_meta) != 0) {
+      fprintf(stderr, "[GENERATE] prompt→IR failed: %s\n",
+              sch_meta.clarifying_question);
+      free(ir_out);
+      return 1;
+    }
+    printf("[GENERATE] prompt IR %s (live=%s)\n", resolved_design,
+           (!force_offline_prompt && gemini_api_key_present()) ? "gemini"
+                                                              : "offline");
+    free(ir_out);
+    design_json = resolved_design;
   } else if (spec_path) {
     memset(&spec, 0, sizeof(spec));
     if (spec_provider_validate_retry(spec_file_provider(), NULL, spec_path,

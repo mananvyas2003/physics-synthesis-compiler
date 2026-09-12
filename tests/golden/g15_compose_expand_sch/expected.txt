@@ -1,0 +1,5 @@
+g15_compose_expand_sch
+blocks=5
+components=5
+has_vbus=1
+has_3v3=1

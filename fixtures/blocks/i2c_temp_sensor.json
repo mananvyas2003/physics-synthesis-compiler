@@ -28,5 +28,20 @@
         "impedance_ohms": 0
       }
     }
-  ]
+  ],
+  "expand": {
+    "parts": [
+      { "mpn": "DEMO-4K7-0603-A", "type": "resistor", "value": 4700.0, "package": "0603", "v_rating": 50.0, "power_rating_w": 0.125 },
+      { "mpn": "DEMO-4K7-0603-B", "type": "resistor", "value": 4700.0, "package": "0603", "v_rating": 50.0, "power_rating_w": 0.125 }
+    ],
+    "components": [
+      { "role": "pull", "part_type": "resistor", "quantity": 1, "target_value": 4700.0, "package": "0603" }
+    ],
+    "nodes": ["3V3", "GND"],
+    "connections": [
+      { "role": "pull", "pin": "1", "node": "3V3" },
+      { "role": "pull", "pin": "2", "node": "GND" }
+    ],
+    "port_nets": { "vdd": "3V3", "gnd": "GND" }
+  }
 }

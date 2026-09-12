@@ -6,27 +6,29 @@
 - Artifacts: `design.net`, `bom.csv`, `design.kicad_sch`, `design-snapshot.v1.json`
 - Snapshot validates against frozen `schemas/design-snapshot.v1.json` shape
 - Goldens `g06_generate_net`, `g07_generate_bom`, `g08_snapshot` pass
+- Structural ERC golden `g16_structural_erc` (`divider_erc=1`)
+- CI job `kicad-erc` runs `scripts/run_kicad_erc.sh` via `kicad-cli sch erc --severity-error --exit-code-violations`
 
-## KiCad open / ERC (manual)
+## Automated ERC proof
 
-1. Build `synth` (CMake or the local gcc command in the README).
-2. Run:
-
-```text
-synth generate fixtures/seed/resistor_divider.json -o out/
+```bash
+cmake -S . -B build && cmake --build build
+export SYNTH_FIXTURE_ROOT=$PWD SYNTH_BIN=$PWD/build/synth
+./scripts/run_kicad_erc.sh out_erc
 ```
 
-3. Open `out/design.kicad_sch` in KiCad 8/9.
-4. Open `out/design.net` via Schematic Editor → Import Netlist (or Tools → Update PCB from Schematic after associating the netlist export).
-5. Run Electrical Rules Check on this fixture. Expected: no ERC errors for the two-resistor VIN/VOUT/GND divider (labels present; no unconnected pins on the placed Device:R symbols).
+Requires KiCad 8+ (`kicad-cli` on PATH). Without KiCad, `g16` still proves pin/label/wire structure for the divider sheet.
+
+## Manual open (optional)
+
+1. Open `out/design.kicad_sch` in KiCad 8/9.
+2. Run Schematic Editor → Inspect → Electrical Rules Checker.
+3. Expect no error-level violations on the VIN/VOUT/GND divider.
 
 ## Snapshot validate
 
-`generate` calls `emit_snapshot_validate_file` before success. Structural checks:
-
-- `schema == "design-snapshot.v1"`
-- `topology`, `generator`, `components[]`, `nets[]` present
+`generate` calls `emit_snapshot_validate_file` before success.
 
 ## Closed
 
-Gate 2 implementation is complete in-tree when goldens g01–g08 are green on CI.
+Gate 2 harden complete when g06–g08 + g16 divider path are green and CI `kicad-erc` is clean on the divider artifact.

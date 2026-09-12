@@ -220,3 +220,159 @@ int compose_gate4_scenario(ComposeResult *out) {
                        "i2c_temp_sensor", "status_led"};
   return compose_from_block_ids(ids, 5, out);
 }
+
+static int node_in_array(cJSON *nodes, const char *name) {
+  cJSON *item;
+  cJSON_ArrayForEach(item, nodes) {
+    if (cJSON_IsString(item) && strcmp(item->valuestring, name) == 0)
+      return 1;
+  }
+  return 0;
+}
+
+static int part_mpn_in_array(cJSON *parts, const char *mpn) {
+  cJSON *item;
+  cJSON_ArrayForEach(item, parts) {
+    const char *m =
+        cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "mpn"));
+    if (m && strcmp(m, mpn) == 0)
+      return 1;
+  }
+  return 0;
+}
+
+int compose_expand_to_schematic(const ComposeResult *composition,
+                                const char *out_path) {
+  cJSON *root;
+  cJSON *parts;
+  cJSON *components;
+  cJSON *nodes;
+  cJSON *connections;
+  char *printed;
+  FILE *fp;
+  int i;
+
+  if (!composition || !out_path || !composition->composition_ok ||
+      composition->block_count <= 0)
+    return 1;
+
+  root = cJSON_CreateObject();
+  if (!root)
+    return 1;
+
+  cJSON_AddStringToObject(root, "schema", "schematic-ir.v1");
+  cJSON_AddStringToObject(root, "name", "usb_c_stm32_composed");
+  cJSON_AddStringToObject(root, "description",
+                          "Gate4/7 composed expand from catalog blocks");
+  cJSON_AddStringToObject(root, "category", "Gate7");
+  parts = cJSON_AddArrayToObject(root, "parts");
+  components = cJSON_AddArrayToObject(root, "components");
+  nodes = cJSON_AddArrayToObject(root, "nodes");
+  connections = cJSON_AddArrayToObject(root, "connections");
+
+  for (i = 0; i < composition->block_count; i++) {
+    char *text = read_all(composition->blocks[i].path);
+    cJSON *block;
+    cJSON *expand;
+    cJSON *arr;
+    cJSON *item;
+    const char *prefix = composition->blocks[i].id;
+
+    if (!text)
+      goto fail;
+    block = cJSON_Parse(text);
+    free(text);
+    if (!block)
+      goto fail;
+
+    expand = cJSON_GetObjectItemCaseSensitive(block, "expand");
+    if (!cJSON_IsObject(expand)) {
+      cJSON_Delete(block);
+      goto fail;
+    }
+
+    arr = cJSON_GetObjectItemCaseSensitive(expand, "parts");
+    if (cJSON_IsArray(arr)) {
+      cJSON_ArrayForEach(item, arr) {
+        const char *mpn =
+            cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "mpn"));
+        if (mpn && !part_mpn_in_array(parts, mpn))
+          cJSON_AddItemToArray(parts, cJSON_Duplicate(item, 1));
+      }
+    }
+
+    arr = cJSON_GetObjectItemCaseSensitive(expand, "nodes");
+    if (cJSON_IsArray(arr)) {
+      cJSON_ArrayForEach(item, arr) {
+        if (cJSON_IsString(item) && !node_in_array(nodes, item->valuestring))
+          cJSON_AddItemToArray(nodes, cJSON_CreateString(item->valuestring));
+      }
+    }
+
+    arr = cJSON_GetObjectItemCaseSensitive(expand, "components");
+    if (cJSON_IsArray(arr)) {
+      cJSON_ArrayForEach(item, arr) {
+        cJSON *copy = cJSON_Duplicate(item, 1);
+        char rolebuf[96];
+        const char *role =
+            cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "role"));
+        if (!copy || !role) {
+          cJSON_Delete(copy);
+          cJSON_Delete(block);
+          goto fail;
+        }
+        snprintf(rolebuf, sizeof(rolebuf), "%s_%s", prefix, role);
+        cJSON_ReplaceItemInObjectCaseSensitive(copy, "role",
+                                               cJSON_CreateString(rolebuf));
+        cJSON_AddItemToArray(components, copy);
+      }
+    }
+
+    arr = cJSON_GetObjectItemCaseSensitive(expand, "connections");
+    if (cJSON_IsArray(arr)) {
+      cJSON_ArrayForEach(item, arr) {
+        cJSON *copy = cJSON_Duplicate(item, 1);
+        char rolebuf[96];
+        const char *role =
+            cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "role"));
+        if (!copy || !role) {
+          cJSON_Delete(copy);
+          cJSON_Delete(block);
+          goto fail;
+        }
+        snprintf(rolebuf, sizeof(rolebuf), "%s_%s", prefix, role);
+        cJSON_ReplaceItemInObjectCaseSensitive(copy, "role",
+                                               cJSON_CreateString(rolebuf));
+        cJSON_AddItemToArray(connections, copy);
+      }
+    }
+
+    cJSON_Delete(block);
+  }
+
+  if (cJSON_GetArraySize(components) < 1 || cJSON_GetArraySize(nodes) < 1) {
+    cJSON_Delete(root);
+    return 1;
+  }
+
+  printed = cJSON_Print(root);
+  cJSON_Delete(root);
+  if (!printed)
+    return 1;
+
+  fp = fopen(out_path, "wb");
+  if (!fp) {
+    free(printed);
+    return 1;
+  }
+  fputs(printed, fp);
+  fputc('\n', fp);
+  fclose(fp);
+  free(printed);
+  return 0;
+
+fail:
+  cJSON_Delete(root);
+  return 1;
+}
+

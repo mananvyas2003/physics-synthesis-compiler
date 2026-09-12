@@ -37,6 +37,14 @@ typedef struct {
 DBResult compiler_compile_resistor_divider(DB *db, const char *topology_name,
                                            CompiledSchematic *out);
 
+/*
+ * Compile topology from DB connectivity + optional bind hints in design JSON
+ * (components[].target_value / package). Missing hints default to 10k/0603.
+ */
+DBResult compiler_compile_from_design(DB *db, const char *topology_name,
+                                      const char *design_json_path,
+                                      CompiledSchematic *out);
+
 void compiler_free_schematic(CompiledSchematic *schematic);
 
 int compiler_write_kicad_sch(const char *filename,

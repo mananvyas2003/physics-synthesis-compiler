@@ -27,29 +27,47 @@ CSV import always takes the CSV path as a CLI argument — never a hardcoded mac
 ./build/synth db seed fixtures/seed/resistor_divider.json board.db
 ./build/synth generate fixtures/seed/resistor_divider.json -o out/
 ./build/synth generate --spec fixtures/specs/001.json -o out/
+./build/synth generate --prompt fixtures/prompts/001.txt -o out/
+./build/synth generate --prompt-text "10k resistor divider" -o out/
 ./build/synth generate --compose-gate4 -o out/
+export SYNTH_BIN=$PWD/build/synth
+./scripts/run_kicad_erc.sh out_erc   # requires kicad-cli
 ```
+
+Live Gemini prompt→schematic: set `GEMINI_API_KEY` (see [docs/GEMINI_PROMPT.md](docs/GEMINI_PROMPT.md)).
+
+## Chat UI (browser)
+
+```bash
+python web/server.py
+# open http://127.0.0.1:8765/
+```
+
+Put `GEMINI_API_KEY` in a repo-root `.env` file. See [docs/WEB_UI.md](docs/WEB_UI.md).
 
 ## Layout
 
 - `cli/` — command implementations
 - `seed/` — JSON topology seed loader
 - `emit/` — netlist, BOM, design-snapshot emitters
-- `spec/` — Spec IR load/validate + LLM provider boundary
-- `compose/` — block composition (DFM)
+- `spec/` — Spec IR + schematic-ir load/validate + LLM/prompt provider boundary
+- `compose/` — block composition (DFM) + expand-to-schematic
 - `bind/` — scored part binding
 - `verify/` — bound-netlist verification report
+- `scripts/run_kicad_erc.sh` — real KiCad ERC for divider + compose-gate4
 - `fixtures/seed/` — seed data files
-- `fixtures/specs/`, `fixtures/prompts/` — Gate 3 corpus
-- `fixtures/blocks/` — Gate 4 block catalog
+- `fixtures/schematics/` — Gate 7 schematic IR corpus
+- `fixtures/specs/`, `fixtures/prompts/` — Gate 3 corpus (prompts also drive Gate 7 IR)
+- `fixtures/blocks/` — Gate 4 block catalog (with expand recipes)
 - `tests/golden/` — golden-file expected outputs
 - `third_party/` — sqlite3 and cJSON amalgams
 
 ## Gates
 
 - [Gate 1](docs/GATE1.md) — foundation
-- [Gate 2](docs/GATE2.md) — KiCad emit / `generate`
+- [Gate 2](docs/GATE2.md) — KiCad emit / `generate` (+ ERC proof)
 - [Gate 3](docs/GATE3.md) — Spec IR offline
-- [Gate 4](docs/GATE4.md) — block composition
+- [Gate 4](docs/GATE4.md) — block composition (+ expand emit)
 - [Gate 5](docs/GATE5.md) — scored binder
 - [Gate 6](docs/GATE6.md) — verification gate
+- [Gate 7](docs/GATE7.md) — free-form schematic IR (grammar-constrained)

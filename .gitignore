@@ -10,3 +10,11 @@
 /generated_resistor_divider.kicad_sch
 .vscode/
 .idea/
+.env
+GEMINI_API_KEY.local
+gemini_req.json
+gemini_resp.json
+/out_web/
+/out_local/
+/out_demo/
+/out_live/

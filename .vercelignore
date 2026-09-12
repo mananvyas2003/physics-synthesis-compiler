@@ -1,0 +1,26 @@
+# Version control
+.git
+.github
+
+# Local credentials & environment
+*.local
+.env
+.env.*
+!.env.example
+GEMINI_API_KEY.local
+
+# Local build artifacts & runs
+out_*/
+*.o
+*.obj
+*.pdb
+*.ilk
+golden_runner*
+build/
+
+# IDE & Editor
+.vscode
+.cursor
+terminals/
+agent-tools/
+agent-transcripts/

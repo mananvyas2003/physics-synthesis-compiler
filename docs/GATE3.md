@@ -10,8 +10,8 @@
 
 ## Notes
 
-Hand-written specs resolve to `fixtures/seed/resistor_divider.json` for M1 emitters until composition selects richer seeds. HTTP provider is intentionally stubbed and not required for Gate 3.
+Hand-written specs still resolve to `fixtures/seed/resistor_divider.json` for the offline Gate 3 path. Richer topologies come from `--compose-gate4` / `--prompt` (Gate 4 / Gate 7). HTTP provider remains stubbed.
 
 ## Closed
 
-Gate 3 is complete in-tree when g09 is green and `--spec` generate succeeds offline.
+Gate 3 is complete when g09 is green and `--spec` generate succeeds offline on CI.

@@ -21,6 +21,11 @@ int golden_g10_compose_gate4(FILE *out, const char *fixture_root);
 int golden_g11_bind_rationale(FILE *out, const char *fixture_root);
 int golden_g12_verify_report(FILE *out, const char *fixture_root);
 
+int golden_g13_schematic_corpus(FILE *out, const char *fixture_root);
+int golden_g14_prompt_generate(FILE *out, const char *fixture_root);
+int golden_g15_compose_expand_sch(FILE *out, const char *fixture_root);
+int golden_g16_structural_erc(FILE *out, const char *fixture_root);
+
 #ifdef __cplusplus
 }
 #endif

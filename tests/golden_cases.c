@@ -6,6 +6,7 @@
 #include "db.h"
 #include "emit.h"
 #include "physics2_interpreter.h"
+#include "schematic_load.h"
 #include "seed_topology.h"
 #include "spec_load.h"
 #include "verify_report.h"
@@ -402,8 +403,8 @@ static int run_generate_artifacts(const char *fixture_root, const char *outdir,
     goto done;
   if (seed_load_topology_json(db, seed_path) != 0)
     goto done;
-  if (compiler_compile_resistor_divider(db, "resistor_divider", schematic) !=
-      DB_OK)
+  if (compiler_compile_from_design(db, "resistor_divider", seed_path,
+                                   schematic) != DB_OK)
     goto done;
   rc = 0;
 
@@ -639,5 +640,331 @@ int golden_g12_verify_report(FILE *out, const char *fixture_root) {
 done:
   compiler_free_schematic(&schematic);
   remove(path);
+  return rc;
+}
+
+int golden_g13_schematic_corpus(FILE *out, const char *fixture_root) {
+  int i;
+  int ok = 0;
+  int fail = 0;
+
+  if (!out)
+    return 1;
+
+  for (i = 1; i <= 10; i++) {
+    char rel[64];
+    char *path;
+    snprintf(rel, sizeof(rel), "fixtures/schematics/%03d.json", i);
+    path = join_root(fixture_root, rel);
+    if (!path) {
+      fail++;
+      continue;
+    }
+    if (schematic_ir_validate_file(path) == 0)
+      ok++;
+    else
+      fail++;
+    free(path);
+  }
+
+  fprintf(out, "g13_schematic_corpus\n");
+  fprintf(out, "valid=%d\n", ok);
+  fprintf(out, "invalid=%d\n", fail);
+  return (ok == 10 && fail == 0) ? 0 : 1;
+}
+
+int golden_g14_prompt_generate(FILE *out, const char *fixture_root) {
+  char *prompt;
+  char ir_path[512];
+  SchematicIrMeta meta;
+  CompiledSchematic schematic;
+  char *db_path = NULL;
+  DB *db = NULL;
+  int rc = 1;
+
+  memset(&schematic, 0, sizeof(schematic));
+  memset(&meta, 0, sizeof(meta));
+  if (!out)
+    return 1;
+
+  prompt = join_root(fixture_root, "fixtures/prompts/001.txt");
+  if (!prompt)
+    return 1;
+  if (schematic_provider_from_prompt(prompt, NULL, NULL, /*force_offline=*/1,
+                                     ir_path, sizeof(ir_path), &meta) != 0) {
+    free(prompt);
+    return 1;
+  }
+  free(prompt);
+
+  db_path = cli_join_path(".", "golden_g14.db");
+  if (!db_path)
+    return 1;
+  remove(db_path);
+  db = DB_open(db_path);
+  if (!db)
+    goto done;
+  if (seed_load_topology_json(db, ir_path) != 0)
+    goto done;
+  if (compiler_compile_from_design(db, meta.name, ir_path, &schematic) != DB_OK)
+    goto done;
+
+  fprintf(out, "g14_prompt_generate\n");
+  fprintf(out, "topology=%s\n", schematic.name);
+  fprintf(out, "components=%d\n", schematic.component_count);
+  if (schematic.component_count == 2)
+    rc = 0;
+
+done:
+  if (db)
+    DB_close(db);
+  compiler_free_schematic(&schematic);
+  if (db_path) {
+    remove(db_path);
+    free(db_path);
+  }
+  return rc;
+}
+
+int golden_g15_compose_expand_sch(FILE *out, const char *fixture_root) {
+  ComposeResult compose;
+  char path[] = "golden_g15_composed.json";
+  FILE *fp;
+  char *text = NULL;
+  long size;
+  int components = 0;
+  int has_vbus = 0;
+  int has_3v3 = 0;
+  int rc = 1;
+  const char *p;
+  (void)fixture_root;
+
+  if (!out)
+    return 1;
+  memset(&compose, 0, sizeof(compose));
+  if (compose_gate4_scenario(&compose) != 0)
+    return 1;
+  if (compose_expand_to_schematic(&compose, path) != 0)
+    return 1;
+
+  fp = fopen(path, "rb");
+  if (!fp)
+    goto done;
+  if (fseek(fp, 0, SEEK_END) != 0) {
+    fclose(fp);
+    goto done;
+  }
+  size = ftell(fp);
+  rewind(fp);
+  if (size < 0) {
+    fclose(fp);
+    goto done;
+  }
+  text = malloc((size_t)size + 1);
+  if (!text) {
+    fclose(fp);
+    goto done;
+  }
+  if (fread(text, 1, (size_t)size, fp) != (size_t)size) {
+    fclose(fp);
+    free(text);
+    text = NULL;
+    goto done;
+  }
+  text[size] = '\0';
+  fclose(fp);
+
+  p = text;
+  while ((p = strstr(p, "\"target_value\"")) != NULL) {
+    components++;
+    p += 14;
+  }
+  if (strstr(text, "\"VBUS\""))
+    has_vbus = 1;
+  if (strstr(text, "\"3V3\""))
+    has_3v3 = 1;
+
+  fprintf(out, "g15_compose_expand_sch\n");
+  fprintf(out, "blocks=%d\n", compose.block_count);
+  fprintf(out, "components=%d\n", components);
+  fprintf(out, "has_vbus=%d\n", has_vbus);
+  fprintf(out, "has_3v3=%d\n", has_3v3);
+  if (compose.block_count == 5 && components == 5 && has_vbus && has_3v3)
+    rc = 0;
+
+done:
+  free(text);
+  remove(path);
+  return rc;
+}
+
+static char *slurp_file(const char *path) {
+  FILE *fp;
+  long size;
+  char *buf;
+  fp = fopen(path, "rb");
+  if (!fp)
+    return NULL;
+  if (fseek(fp, 0, SEEK_END) != 0) {
+    fclose(fp);
+    return NULL;
+  }
+  size = ftell(fp);
+  rewind(fp);
+  if (size < 0) {
+    fclose(fp);
+    return NULL;
+  }
+  buf = malloc((size_t)size + 1);
+  if (!buf) {
+    fclose(fp);
+    return NULL;
+  }
+  if (fread(buf, 1, (size_t)size, fp) != (size_t)size) {
+    free(buf);
+    fclose(fp);
+    return NULL;
+  }
+  buf[size] = '\0';
+  fclose(fp);
+  return buf;
+}
+
+static int count_substr(const char *hay, const char *needle) {
+  int n = 0;
+  const char *p = hay;
+  size_t len = strlen(needle);
+  if (!hay || !needle || len == 0)
+    return 0;
+  while ((p = strstr(p, needle)) != NULL) {
+    n++;
+    p += len;
+  }
+  return n;
+}
+
+/*
+ * Structural ERC surrogate (always runs in CI without KiCad):
+ * - Device:R symbols present with pin 1/2
+ * - Labels (local or global) present for nets
+ * - Composed sch must not use the old vertical inter-part short pattern alone
+ */
+static int structural_erc_check(const char *sch_path, int expect_symbols,
+                                int require_global_labels) {
+  char *text;
+  int symbols;
+  int pin1;
+  int pin2;
+  int labels;
+  int global_labels;
+  int wires;
+
+  text = slurp_file(sch_path);
+  if (!text)
+    return 1;
+
+  symbols = count_substr(text, "(lib_id \"Device:R\")");
+  pin1 = count_substr(text, "(pin \"1\"");
+  pin2 = count_substr(text, "(pin \"2\"");
+  labels = count_substr(text, "(label \"");
+  global_labels = count_substr(text, "(global_label \"");
+  wires = count_substr(text, "(wire");
+
+  free(text);
+
+  if (symbols != expect_symbols)
+    return 1;
+  if (pin1 < expect_symbols || pin2 < expect_symbols)
+    return 1;
+  if (labels + global_labels < expect_symbols)
+    return 1;
+  if (require_global_labels && global_labels < expect_symbols * 2)
+    return 1;
+  if (wires < expect_symbols)
+    return 1;
+  return 0;
+}
+
+int golden_g16_structural_erc(FILE *out, const char *fixture_root) {
+  ComposeResult compose;
+  CompiledSchematic schematic;
+  char *seed_path = NULL;
+  char *db_path = NULL;
+  char compose_ir[] = "golden_g16_composed.json";
+  char divider_sch[] = "golden_g16_divider.kicad_sch";
+  char compose_sch[] = "golden_g16_compose.kicad_sch";
+  DB *db = NULL;
+  int divider_ok = 0;
+  int compose_ok = 0;
+  int topology_ok = 0;
+  int rc = 1;
+
+  memset(&schematic, 0, sizeof(schematic));
+  memset(&compose, 0, sizeof(compose));
+  if (!out)
+    return 1;
+
+  /* Divider special-case layout (local labels) — Gate 2 path. */
+  seed_path = join_root(fixture_root, "fixtures/seed/resistor_divider.json");
+  db_path = cli_join_path(".", "golden_g16.db");
+  if (!seed_path || !db_path)
+    goto done;
+  remove(db_path);
+  db = DB_open(db_path);
+  if (!db)
+    goto done;
+  if (seed_load_topology_json(db, seed_path) != 0)
+    goto done;
+  if (compiler_compile_from_design(db, "resistor_divider", seed_path,
+                                   &schematic) != DB_OK)
+    goto done;
+  if (!compiler_write_kicad_sch(divider_sch, &schematic))
+    goto done;
+  divider_ok = structural_erc_check(divider_sch, 2, 0) == 0 ? 1 : 0;
+  compiler_free_schematic(&schematic);
+  memset(&schematic, 0, sizeof(schematic));
+  DB_close(db);
+  db = NULL;
+  remove(db_path);
+
+  /* Gate 4 composed expand → sch with global labels (no stand-in). */
+  if (compose_gate4_scenario(&compose) != 0)
+    goto done;
+  if (compose_expand_to_schematic(&compose, compose_ir) != 0)
+    goto done;
+  db = DB_open(db_path);
+  if (!db)
+    goto done;
+  if (seed_load_topology_json(db, compose_ir) != 0)
+    goto done;
+  if (compiler_compile_from_design(db, "usb_c_stm32_composed", compose_ir,
+                                   &schematic) != DB_OK)
+    goto done;
+  if (strcmp(schematic.name, "usb_c_stm32_composed") == 0 &&
+      schematic.component_count == 5)
+    topology_ok = 1;
+  if (!compiler_write_kicad_sch(compose_sch, &schematic))
+    goto done;
+  compose_ok = structural_erc_check(compose_sch, 5, 1) == 0 ? 1 : 0;
+
+  fprintf(out, "g16_structural_erc\n");
+  fprintf(out, "divider_erc=%d\n", divider_ok);
+  fprintf(out, "compose_topology=%d\n", topology_ok);
+  fprintf(out, "compose_erc=%d\n", compose_ok);
+  if (divider_ok && topology_ok && compose_ok)
+    rc = 0;
+
+done:
+  if (db)
+    DB_close(db);
+  compiler_free_schematic(&schematic);
+  free(seed_path);
+  if (db_path) {
+    remove(db_path);
+    free(db_path);
+  }
+  remove(compose_ir);
+  remove(divider_sch);
+  remove(compose_sch);
   return rc;
 }

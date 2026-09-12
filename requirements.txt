@@ -1,0 +1,2 @@
+# physics-synthesis-compiler runtime dependencies
+# Only Python standard library modules are required for the serverless function.

@@ -62,6 +62,8 @@ add_library(synth_core STATIC
   emit/emit_snapshot.c
   spec/spec_load.c
   spec/llm_provider.c
+  spec/schematic_load.c
+  spec/gemini_schematic.c
   compose/compose.c
   bind/bind_scorer.c
   verify/verify_report.c

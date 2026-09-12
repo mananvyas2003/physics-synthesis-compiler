@@ -28,5 +28,21 @@
         "impedance_ohms": 0
       }
     }
-  ]
+  ],
+  "expand": {
+    "parts": [
+      { "mpn": "DEMO-10K-0603-A", "type": "resistor", "value": 10000.0, "package": "0603", "v_rating": 50.0, "power_rating_w": 0.125 },
+      { "mpn": "DEMO-10K-0603-B", "type": "resistor", "value": 10000.0, "package": "0603", "v_rating": 50.0, "power_rating_w": 0.125 },
+      { "mpn": "DEMO-10K-0603-C", "type": "resistor", "value": 10000.0, "package": "0603", "v_rating": 75.0, "power_rating_w": 0.25 }
+    ],
+    "components": [
+      { "role": "fb", "part_type": "resistor", "quantity": 1, "target_value": 10000.0, "package": "0603" }
+    ],
+    "nodes": ["VBUS", "3V3", "GND"],
+    "connections": [
+      { "role": "fb", "pin": "1", "node": "VBUS" },
+      { "role": "fb", "pin": "2", "node": "3V3" }
+    ],
+    "port_nets": { "vin": "VBUS", "vout": "3V3", "gnd": "GND" }
+  }
 }

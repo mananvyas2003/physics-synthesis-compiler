@@ -7,6 +7,14 @@
 static double estimate_unit_cost(const char *mpn) {
   if (!mpn)
     return 0.02;
+  if (strstr(mpn, "5K1") && strstr(mpn, "-A"))
+    return 0.010;
+  if (strstr(mpn, "330") && strstr(mpn, "-A"))
+    return 0.008;
+  if (strstr(mpn, "4K7") && strstr(mpn, "-A"))
+    return 0.009;
+  if (strstr(mpn, "4K7") && strstr(mpn, "-B"))
+    return 0.011;
   if (strstr(mpn, "-A"))
     return 0.010;
   if (strstr(mpn, "-B"))

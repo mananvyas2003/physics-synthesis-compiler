@@ -1,0 +1,536 @@
+(kicad_sch
+	(version 20250114)
+	(generator "eeschema")
+	(generator_version "9.0")
+	(uuid "00000000-0000-4000-8000-000000000001")
+	(paper "A4")
+	(lib_symbols
+		(symbol "Device:R"
+			(pin_numbers
+				(hide yes)
+			)
+			(pin_names
+				(offset 0)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(property "Reference" "R"
+				(at 2.032 0 90)
+				(effects
+					(font (size 1.27 1.27))
+				)
+			)
+			(property "Value" "R"
+				(at 0 0 90)
+				(effects
+					(font (size 1.27 1.27))
+				)
+			)
+			(property "Footprint" ""
+				(at -1.778 0 90)
+				(effects
+					(font (size 1.27 1.27))
+					(hide yes)
+				)
+			)
+			(property "Datasheet" "~"
+				(at 0 0 0)
+				(effects
+					(font (size 1.27 1.27))
+					(hide yes)
+				)
+			)
+			(property "Description" "Resistor"
+				(at 0 0 0)
+				(effects
+					(font (size 1.27 1.27))
+					(hide yes)
+				)
+			)
+			(property "ki_keywords" "R res resistor"
+				(at 0 0 0)
+				(effects
+					(font (size 1.27 1.27))
+					(hide yes)
+				)
+			)
+			(property "ki_fp_filters" "R_*"
+				(at 0 0 0)
+				(effects
+					(font (size 1.27 1.27))
+					(hide yes)
+				)
+			)
+			(symbol "R_0_1"
+				(rectangle
+					(start -1.016 -2.54)
+					(end 1.016 2.54)
+					(stroke (width 0.254) (type default))
+					(fill (type none))
+				)
+			)
+			(symbol "R_1_1"
+				(pin passive line
+					(at 0 3.81 270)
+					(length 1.27)
+					(name "~" (effects (font (size 1.27 1.27))))
+					(number "1" (effects (font (size 1.27 1.27))))
+				)
+				(pin passive line
+					(at 0 -3.81 90)
+					(length 1.27)
+					(name "~" (effects (font (size 1.27 1.27))))
+					(number "2" (effects (font (size 1.27 1.27))))
+				)
+			)
+			(embedded_fonts no)
+		)
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 100.00 80.00 180)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "00000000-0000-4000-8000-000000000100")
+		(property "Reference" "usb_c_sink_cc"
+			(at 102.00 75.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(justify left)
+			)
+		)
+		(property "Value" "DEMO-5K1-0603-A"
+			(at 102.00 85.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+			(at 98.00 80.00 90)
+			(effects
+				(font (size 1.27 1.27))
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 100.00 80.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(hide yes)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 100.00 80.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(hide yes)
+			)
+		)
+		(pin "1" (uuid "00000000-0000-4000-8000-000000000200"))
+		(pin "2" (uuid "00000000-0000-4000-8000-000000000201"))
+		(instances
+			(project ""
+				(path "/00000000-0000-4000-8000-000000000001"
+					(reference "usb_c_sink_cc")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 100.00 76.19) (xy 100.00 70.00)
+		)
+		(stroke (width 0) (type default))
+		(uuid "00000000-0000-4000-8000-000000000400")
+	)
+	(wire
+		(pts
+			(xy 100.00 83.81) (xy 100.00 90.00)
+		)
+		(stroke (width 0) (type default))
+		(uuid "00000000-0000-4000-8000-000000000401")
+	)
+	(global_label "VBUS"
+		(shape input)
+		(at 100.00 70.00 0)
+		(effects
+			(font (size 1.27 1.27))
+			(justify left)
+		)
+		(uuid "00000000-0000-4000-8000-000000000300")
+	)
+	(global_label "GND"
+		(shape input)
+		(at 100.00 90.00 0)
+		(effects
+			(font (size 1.27 1.27))
+			(justify left)
+		)
+		(uuid "00000000-0000-4000-8000-000000000301")
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 140.00 80.00 180)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "00000000-0000-4000-8000-000000000101")
+		(property "Reference" "ldo_5v_fb"
+			(at 142.00 75.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(justify left)
+			)
+		)
+		(property "Value" "DEMO-10K-0603-A"
+			(at 142.00 85.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+			(at 138.00 80.00 90)
+			(effects
+				(font (size 1.27 1.27))
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 140.00 80.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(hide yes)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 140.00 80.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(hide yes)
+			)
+		)
+		(pin "1" (uuid "00000000-0000-4000-8000-000000000202"))
+		(pin "2" (uuid "00000000-0000-4000-8000-000000000203"))
+		(instances
+			(project ""
+				(path "/00000000-0000-4000-8000-000000000001"
+					(reference "ldo_5v_fb")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 140.00 76.19) (xy 140.00 70.00)
+		)
+		(stroke (width 0) (type default))
+		(uuid "00000000-0000-4000-8000-000000000402")
+	)
+	(wire
+		(pts
+			(xy 140.00 83.81) (xy 140.00 90.00)
+		)
+		(stroke (width 0) (type default))
+		(uuid "00000000-0000-4000-8000-000000000403")
+	)
+	(global_label "VBUS"
+		(shape input)
+		(at 140.00 70.00 0)
+		(effects
+			(font (size 1.27 1.27))
+			(justify left)
+		)
+		(uuid "00000000-0000-4000-8000-000000000302")
+	)
+	(global_label "3V3"
+		(shape input)
+		(at 140.00 90.00 0)
+		(effects
+			(font (size 1.27 1.27))
+			(justify left)
+		)
+		(uuid "00000000-0000-4000-8000-000000000303")
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 180.00 80.00 180)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "00000000-0000-4000-8000-000000000102")
+		(property "Reference" "mcu_min_system_pu"
+			(at 182.00 75.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(justify left)
+			)
+		)
+		(property "Value" "DEMO-10K-0603-A"
+			(at 182.00 85.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+			(at 178.00 80.00 90)
+			(effects
+				(font (size 1.27 1.27))
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 180.00 80.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(hide yes)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 180.00 80.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(hide yes)
+			)
+		)
+		(pin "1" (uuid "00000000-0000-4000-8000-000000000204"))
+		(pin "2" (uuid "00000000-0000-4000-8000-000000000205"))
+		(instances
+			(project ""
+				(path "/00000000-0000-4000-8000-000000000001"
+					(reference "mcu_min_system_pu")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 180.00 76.19) (xy 180.00 70.00)
+		)
+		(stroke (width 0) (type default))
+		(uuid "00000000-0000-4000-8000-000000000404")
+	)
+	(wire
+		(pts
+			(xy 180.00 83.81) (xy 180.00 90.00)
+		)
+		(stroke (width 0) (type default))
+		(uuid "00000000-0000-4000-8000-000000000405")
+	)
+	(global_label "3V3"
+		(shape input)
+		(at 180.00 70.00 0)
+		(effects
+			(font (size 1.27 1.27))
+			(justify left)
+		)
+		(uuid "00000000-0000-4000-8000-000000000304")
+	)
+	(global_label "GND"
+		(shape input)
+		(at 180.00 90.00 0)
+		(effects
+			(font (size 1.27 1.27))
+			(justify left)
+		)
+		(uuid "00000000-0000-4000-8000-000000000305")
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 220.00 80.00 180)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "00000000-0000-4000-8000-000000000103")
+		(property "Reference" "i2c_temp_sensor_pull"
+			(at 222.00 75.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(justify left)
+			)
+		)
+		(property "Value" "DEMO-4K7-0603-A"
+			(at 222.00 85.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+			(at 218.00 80.00 90)
+			(effects
+				(font (size 1.27 1.27))
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 220.00 80.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(hide yes)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 220.00 80.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(hide yes)
+			)
+		)
+		(pin "1" (uuid "00000000-0000-4000-8000-000000000206"))
+		(pin "2" (uuid "00000000-0000-4000-8000-000000000207"))
+		(instances
+			(project ""
+				(path "/00000000-0000-4000-8000-000000000001"
+					(reference "i2c_temp_sensor_pull")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 220.00 76.19) (xy 220.00 70.00)
+		)
+		(stroke (width 0) (type default))
+		(uuid "00000000-0000-4000-8000-000000000406")
+	)
+	(wire
+		(pts
+			(xy 220.00 83.81) (xy 220.00 90.00)
+		)
+		(stroke (width 0) (type default))
+		(uuid "00000000-0000-4000-8000-000000000407")
+	)
+	(global_label "3V3"
+		(shape input)
+		(at 220.00 70.00 0)
+		(effects
+			(font (size 1.27 1.27))
+			(justify left)
+		)
+		(uuid "00000000-0000-4000-8000-000000000306")
+	)
+	(global_label "GND"
+		(shape input)
+		(at 220.00 90.00 0)
+		(effects
+			(font (size 1.27 1.27))
+			(justify left)
+		)
+		(uuid "00000000-0000-4000-8000-000000000307")
+	)
+	(symbol
+		(lib_id "Device:R")
+		(at 100.00 120.00 180)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "00000000-0000-4000-8000-000000000104")
+		(property "Reference" "status_led_rled"
+			(at 102.00 115.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(justify left)
+			)
+		)
+		(property "Value" "DEMO-330-0603-A"
+			(at 102.00 125.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric"
+			(at 98.00 120.00 90)
+			(effects
+				(font (size 1.27 1.27))
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 100.00 120.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(hide yes)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 100.00 120.00 0)
+			(effects
+				(font (size 1.27 1.27))
+				(hide yes)
+			)
+		)
+		(pin "1" (uuid "00000000-0000-4000-8000-000000000208"))
+		(pin "2" (uuid "00000000-0000-4000-8000-000000000209"))
+		(instances
+			(project ""
+				(path "/00000000-0000-4000-8000-000000000001"
+					(reference "status_led_rled")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(wire
+		(pts
+			(xy 100.00 116.19) (xy 100.00 110.00)
+		)
+		(stroke (width 0) (type default))
+		(uuid "00000000-0000-4000-8000-000000000408")
+	)
+	(wire
+		(pts
+			(xy 100.00 123.81) (xy 100.00 130.00)
+		)
+		(stroke (width 0) (type default))
+		(uuid "00000000-0000-4000-8000-000000000409")
+	)
+	(global_label "3V3"
+		(shape input)
+		(at 100.00 110.00 0)
+		(effects
+			(font (size 1.27 1.27))
+			(justify left)
+		)
+		(uuid "00000000-0000-4000-8000-000000000308")
+	)
+	(global_label "GND"
+		(shape input)
+		(at 100.00 130.00 0)
+		(effects
+			(font (size 1.27 1.27))
+			(justify left)
+		)
+		(uuid "00000000-0000-4000-8000-000000000309")
+	)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+	(embedded_fonts no)
+)

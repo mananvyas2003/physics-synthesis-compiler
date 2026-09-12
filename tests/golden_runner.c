@@ -64,6 +64,22 @@ static int run_g12(FILE *out, const char *fixture_root) {
   return golden_g12_verify_report(out, fixture_root);
 }
 
+static int run_g13(FILE *out, const char *fixture_root) {
+  return golden_g13_schematic_corpus(out, fixture_root);
+}
+
+static int run_g14(FILE *out, const char *fixture_root) {
+  return golden_g14_prompt_generate(out, fixture_root);
+}
+
+static int run_g15(FILE *out, const char *fixture_root) {
+  return golden_g15_compose_expand_sch(out, fixture_root);
+}
+
+static int run_g16(FILE *out, const char *fixture_root) {
+  return golden_g16_structural_erc(out, fixture_root);
+}
+
 static char *read_file(const char *path) {
   FILE *fp;
   long size;
@@ -204,6 +220,14 @@ int main(int argc, char **argv) {
        run_g11},
       {"g12_verify_report", "tests/golden/g12_verify_report/expected.txt",
        run_g12},
+      {"g13_schematic_corpus", "tests/golden/g13_schematic_corpus/expected.txt",
+       run_g13},
+      {"g14_prompt_generate", "tests/golden/g14_prompt_generate/expected.txt",
+       run_g14},
+      {"g15_compose_expand_sch",
+       "tests/golden/g15_compose_expand_sch/expected.txt", run_g15},
+      {"g16_structural_erc", "tests/golden/g16_structural_erc/expected.txt",
+       run_g16},
   };
   size_t i;
   int failures = 0;

@@ -1,0 +1,24 @@
+{
+  "schema": "schematic-ir.v1",
+  "name": "schematic_003",
+  "description": "Gate7 corpus schematic 003",
+  "category": "Gate7",
+  "parts": [
+    { "mpn": "DEMO-10K-0603-A", "type": "resistor", "value": 10000.0, "package": "0603", "v_rating": 50.0, "power_rating_w": 0.125 },
+    { "mpn": "DEMO-10K-0603-B", "type": "resistor", "value": 10000.0, "package": "0603", "v_rating": 50.0, "power_rating_w": 0.125 },
+    { "mpn": "DEMO-10K-0603-C", "type": "resistor", "value": 10000.0, "package": "0603", "v_rating": 75.0, "power_rating_w": 0.25 },
+    { "mpn": "DEMO-4K7-0603-A", "type": "resistor", "value": 4700.0, "package": "0603", "v_rating": 50.0, "power_rating_w": 0.125 },
+    { "mpn": "DEMO-4K7-0603-B", "type": "resistor", "value": 4700.0, "package": "0603", "v_rating": 50.0, "power_rating_w": 0.125 }
+  ],
+  "components": [
+    { "role": "r1", "part_type": "resistor", "quantity": 1, "target_value": 10000, "package": "0603" },
+    { "role": "r2", "part_type": "resistor", "quantity": 1, "target_value": 10000, "package": "0603" }
+  ],
+  "nodes": ["VIN", "VOUT", "GND"],
+  "connections": [
+    { "role": "r1", "pin": "1", "node": "VIN" },
+    { "role": "r1", "pin": "2", "node": "VOUT" },
+    { "role": "r2", "pin": "1", "node": "VOUT" },
+    { "role": "r2", "pin": "2", "node": "GND" }
+  ]
+}

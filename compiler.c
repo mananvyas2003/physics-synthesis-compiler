@@ -1,6 +1,7 @@
 #include "compiler.h"
 
 #include "bind_scorer.h"
+#include "cJSON.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -43,97 +44,209 @@ static void clear_schematic(CompiledSchematic *schematic) {
   memset(schematic, 0, sizeof(*schematic));
 }
 
-DBResult compiler_compile_resistor_divider(DB *db, const char *topology_name,
-                                           CompiledSchematic *out) {
+typedef struct {
+  char role[64];
+  double target_value;
+  char package[32];
+  int has_hint;
+} BindHint;
+
+static int load_bind_hints(const char *design_json_path, BindHint *hints,
+                           int max_hints, int *out_count) {
+  FILE *fp;
+  long size;
+  char *buf;
+  cJSON *root;
+  cJSON *components;
+  cJSON *item;
+  int count = 0;
+
+  if (out_count)
+    *out_count = 0;
+  if (!design_json_path || !hints || max_hints <= 0)
+    return 1;
+
+  fp = fopen(design_json_path, "rb");
+  if (!fp)
+    return 1;
+  if (fseek(fp, 0, SEEK_END) != 0) {
+    fclose(fp);
+    return 1;
+  }
+  size = ftell(fp);
+  if (size < 0) {
+    fclose(fp);
+    return 1;
+  }
+  rewind(fp);
+  buf = malloc((size_t)size + 1);
+  if (!buf) {
+    fclose(fp);
+    return 1;
+  }
+  if (fread(buf, 1, (size_t)size, fp) != (size_t)size) {
+    free(buf);
+    fclose(fp);
+    return 1;
+  }
+  buf[size] = '\0';
+  fclose(fp);
+
+  root = cJSON_Parse(buf);
+  free(buf);
+  if (!root)
+    return 1;
+
+  components = cJSON_GetObjectItemCaseSensitive(root, "components");
+  if (cJSON_IsArray(components)) {
+    cJSON_ArrayForEach(item, components) {
+      const char *role;
+      cJSON *tv;
+      cJSON *pkg;
+      if (count >= max_hints)
+        break;
+      role = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "role"));
+      if (!role)
+        continue;
+      memset(&hints[count], 0, sizeof(hints[count]));
+      strncpy(hints[count].role, role, sizeof(hints[count].role) - 1);
+      tv = cJSON_GetObjectItemCaseSensitive(item, "target_value");
+      pkg = cJSON_GetObjectItemCaseSensitive(item, "package");
+      if (cJSON_IsNumber(tv)) {
+        hints[count].target_value = tv->valuedouble;
+        hints[count].has_hint = 1;
+      } else {
+        hints[count].target_value = 10000.0;
+      }
+      if (cJSON_IsString(pkg))
+        strncpy(hints[count].package, pkg->valuestring,
+                sizeof(hints[count].package) - 1);
+      else
+        strncpy(hints[count].package, "0603", sizeof(hints[count].package) - 1);
+      count++;
+    }
+  }
+
+  cJSON_Delete(root);
+  if (out_count)
+    *out_count = count;
+  return 0;
+}
+
+static const BindHint *find_hint(const BindHint *hints, int count,
+                                 const char *role) {
+  int i;
+  for (i = 0; i < count; i++) {
+    if (strcmp(hints[i].role, role) == 0)
+      return &hints[i];
+  }
+  return NULL;
+}
+
+DBResult compiler_compile_from_design(DB *db, const char *topology_name,
+                                      const char *design_json_path,
+                                      CompiledSchematic *out) {
+  TopologyComponentRow components[32];
+  TopologyNodeRow nodes[32];
+  TopologyConnectionRow connections[64];
+  BindHint hints[32];
+  int component_count = 0;
+  int node_count = 0;
+  int connection_count = 0;
+  int hint_count = 0;
+  DBResult result;
+  int i;
+
   if (!db || !topology_name || !out)
     return DB_ERROR;
 
   clear_schematic(out);
+  (void)load_bind_hints(design_json_path, hints, 32, &hint_count);
 
-  TopologyComponentRow components[32];
-  TopologyNodeRow nodes[32];
-  TopologyConnectionRow connections[64];
-
-  int component_count = 0;
-  int node_count = 0;
-  int connection_count = 0;
-
-  DBResult result =
+  result =
       DB_GetTopology(db, topology_name, components, 32, &component_count, nodes,
                      32, &node_count, connections, 64, &connection_count);
-
   if (result != DB_OK)
     return result;
 
   strncpy(out->name, topology_name, sizeof(out->name) - 1);
-
   out->components = calloc((size_t)component_count, sizeof(*out->components));
-
   if (!out->components)
     return DB_ERROR;
 
-  for (int i = 0; i < component_count; i++) {
-
+  for (i = 0; i < component_count; i++) {
     const TopologyComponentRow *tc = &components[i];
+    CompiledComponent *cc;
+    const TopologyConnectionRow *pin1;
+    const TopologyConnectionRow *pin2;
+    const char *node1;
+    const char *node2;
+    const BindHint *hint;
+    BindChoice choice;
+    double target = 10000.0;
+    const char *package = "0603";
+    double applied_v = 5.0;
+    double dissip = 0.0025;
 
     if (tc->part_type != PART_RESISTOR) {
       compiler_free_schematic(out);
       return DB_ERROR;
     }
 
-    CompiledComponent *cc = &out->components[i];
-
+    cc = &out->components[i];
     strncpy(cc->role, tc->role_name, sizeof(cc->role) - 1);
 
-    const TopologyConnectionRow *pin1 =
-        find_connection(connections, connection_count, tc->role_name, "1");
-
-    const TopologyConnectionRow *pin2 =
-        find_connection(connections, connection_count, tc->role_name, "2");
-
+    pin1 = find_connection(connections, connection_count, tc->role_name, "1");
+    pin2 = find_connection(connections, connection_count, tc->role_name, "2");
     if (!pin1 || !pin2) {
       compiler_free_schematic(out);
       return DB_ERROR;
     }
 
     strncpy(cc->pin1, pin1->pin_name, sizeof(cc->pin1) - 1);
-
     strncpy(cc->pin2, pin2->pin_name, sizeof(cc->pin2) - 1);
 
-    const char *node1 = find_node_name(nodes, node_count, pin1->node_name);
-
-    const char *node2 = find_node_name(nodes, node_count, pin2->node_name);
-
+    node1 = find_node_name(nodes, node_count, pin1->node_name);
+    node2 = find_node_name(nodes, node_count, pin2->node_name);
     if (!node1 || !node2) {
       compiler_free_schematic(out);
       return DB_ERROR;
     }
 
     strncpy(cc->node1, node1, sizeof(cc->node1) - 1);
-
     strncpy(cc->node2, node2, sizeof(cc->node2) - 1);
 
-    {
-      BindChoice choice;
-      /* Divider fixture: ~5 V across each 10k at 10 V excitation. */
-      if (bind_score_passive(db, PART_RESISTOR, 10000.0, "0603", TOLERANCE_E96,
-                             5.0, 0.0025, &choice) != 0) {
-        compiler_free_schematic(out);
-        return DB_NOT_FOUND;
-      }
-      cc->part = choice.primary;
-      strncpy(cc->rationale, choice.rationale, sizeof(cc->rationale) - 1);
-      cc->unit_cost = choice.unit_cost;
-      cc->has_alternate = choice.has_alternate;
-      if (choice.has_alternate)
-        strncpy(cc->alternate_mpn, choice.alternate.mpn,
-                sizeof(cc->alternate_mpn) - 1);
+    hint = find_hint(hints, hint_count, tc->role_name);
+    if (hint) {
+      target = hint->target_value;
+      package = hint->package;
+      if (target > 0.0)
+        dissip = (applied_v * applied_v) / target;
     }
+
+    if (bind_score_passive(db, PART_RESISTOR, target, package, TOLERANCE_E96,
+                           applied_v, dissip, &choice) != 0) {
+      compiler_free_schematic(out);
+      return DB_NOT_FOUND;
+    }
+
+    cc->part = choice.primary;
+    strncpy(cc->rationale, choice.rationale, sizeof(cc->rationale) - 1);
+    cc->unit_cost = choice.unit_cost;
+    cc->has_alternate = choice.has_alternate;
+    if (choice.has_alternate)
+      strncpy(cc->alternate_mpn, choice.alternate.mpn,
+              sizeof(cc->alternate_mpn) - 1);
 
     out->component_count++;
   }
 
   return DB_OK;
+}
+
+DBResult compiler_compile_resistor_divider(DB *db, const char *topology_name,
+                                           CompiledSchematic *out) {
+  return compiler_compile_from_design(db, topology_name, NULL, out);
 }
 
 void compiler_free_schematic(CompiledSchematic *schematic) {
@@ -386,6 +499,24 @@ static void write_label(FILE *fp, const char *text, double x, double y,
           text, x, y, uuid);
 }
 
+static void write_global_label(FILE *fp, const char *text, double x, double y,
+                               unsigned int id) {
+  char uuid[64];
+  make_uuid(uuid, sizeof(uuid), id);
+
+  fprintf(fp,
+          "\t(global_label \"%s\"\n"
+          "\t\t(shape input)\n"
+          "\t\t(at %.2f %.2f 0)\n"
+          "\t\t(effects\n"
+          "\t\t\t(font (size 1.27 1.27))\n"
+          "\t\t\t(justify left)\n"
+          "\t\t)\n"
+          "\t\t(uuid \"%s\")\n"
+          "\t)\n",
+          text, x, y, uuid);
+}
+
 int compiler_write_kicad_sch(const char *filename,
                              const CompiledSchematic *schematic) {
   FILE *fp;
@@ -442,20 +573,25 @@ int compiler_write_kicad_sch(const char *filename,
     write_label(fp, "VOUT", 100, 95, 302);
     write_label(fp, "GND", 100, 125, 303);
   } else {
+    /*
+     * Naive grid: stub wires pin→global_label only.
+     * Do NOT wire consecutive parts — that falsely shorted unrelated nets
+     * and broke Gate4 composed ERC.
+     */
     for (i = 0; i < schematic->component_count; i++) {
       double x = 100.0 + (i % 4) * 40.0;
-      double y = 80.0 + (i / 4) * 30.0;
+      double y = 80.0 + (i / 4) * 40.0;
       make_uuid(uuid, sizeof(uuid), (unsigned)(100 + i));
       make_uuid(pin1_uuid, sizeof(pin1_uuid), (unsigned)(200 + i * 2));
       make_uuid(pin2_uuid, sizeof(pin2_uuid), (unsigned)(201 + i * 2));
       write_placed_resistor(fp, &schematic->components[i], x, y, uuid, pin1_uuid,
                             pin2_uuid);
-      write_label(fp, schematic->components[i].node1, x, y - 15.0,
-                  (unsigned)(300 + i * 2));
-      write_label(fp, schematic->components[i].node2, x, y + 15.0,
-                  (unsigned)(301 + i * 2));
-      if (i + 1 < schematic->component_count)
-        write_wire(fp, x, y + 3.81, x, y + 30.0 - 3.81, (unsigned)(400 + i));
+      write_wire(fp, x, y - 3.81, x, y - 10.0, (unsigned)(400 + i * 2));
+      write_wire(fp, x, y + 3.81, x, y + 10.0, (unsigned)(401 + i * 2));
+      write_global_label(fp, schematic->components[i].node1, x, y - 10.0,
+                         (unsigned)(300 + i * 2));
+      write_global_label(fp, schematic->components[i].node2, x, y + 10.0,
+                         (unsigned)(301 + i * 2));
     }
   }
 

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://physics-synthesis.local/schemas/schematic-ir.v1.json",
+  "title": "schematic-ir.v1",
+  "description": "Grammar-constrained schematic IR (elevated seed topology format).",
+  "type": "object",
+  "required": ["name", "description", "category", "parts", "components", "nodes", "connections"],
+  "properties": {
+    "schema": { "const": "schematic-ir.v1" },
+    "name": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "category": { "type": "string" },
+    "parts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["mpn", "type", "value", "package"],
+        "properties": {
+          "mpn": { "type": "string" },
+          "type": { "type": "string" },
+          "value": { "type": "number" },
+          "package": { "type": "string" },
+          "v_rating": { "type": "number" },
+          "power_rating_w": { "type": "number" }
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["role", "part_type", "quantity"],
+        "properties": {
+          "role": { "type": "string" },
+          "part_type": { "type": "string" },
+          "quantity": { "type": "integer", "minimum": 1 },
+          "target_value": { "type": "number" },
+          "package": { "type": "string" }
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "connections": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["role", "pin", "node"],
+        "properties": {
+          "role": { "type": "string" },
+          "pin": { "type": "string" },
+          "node": { "type": "string" }
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}

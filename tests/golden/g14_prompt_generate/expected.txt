@@ -1,0 +1,3 @@
+g14_prompt_generate
+topology=schematic_001
+components=2

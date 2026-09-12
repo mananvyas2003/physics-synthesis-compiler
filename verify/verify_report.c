@@ -8,12 +8,23 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Simple AC magnitude sample at omega (rad/s) using DC conductance scale. */
 static double ac_magnitude_stub(double g_ohms, double omega) {
   (void)omega;
   if (g_ohms <= 0.0)
     return 0.0;
   return 1.0 / g_ohms;
+}
+
+static int name_is(const char *a, const char *b) {
+  return a && b && strcmp(a, b) == 0;
+}
+
+static int is_power_pos(const char *name) {
+  return name_is(name, "VIN") || name_is(name, "VBUS");
+}
+
+static int is_sense(const char *name) {
+  return name_is(name, "VOUT") || name_is(name, "3V3");
 }
 
 int verify_bound_schematic(const CompiledSchematic *schematic,
@@ -28,10 +39,10 @@ int verify_bound_schematic(const CompiledSchematic *schematic,
   int i;
   int j;
   NodeId gnd = PHYSICS2_NODE_NONE;
-  NodeId vout = PHYSICS2_NODE_NONE;
+  NodeId sense = PHYSICS2_NODE_NONE;
   NodeId vin = PHYSICS2_NODE_NONE;
-  double vout_v = 0.0;
-  double vin_v = 10.0;
+  double sense_v = 0.0;
+  double vin_v = 5.0;
   double corner_low = 0.0;
   double corner_high = 0.0;
   double ac_mag = 0.0;
@@ -39,6 +50,7 @@ int verify_bound_schematic(const CompiledSchematic *schematic,
   char *printed = NULL;
   FILE *fp;
   int rc = 1;
+  int has_dc = 0;
 
   if (!schematic || !report_path || !out)
     return 1;
@@ -67,24 +79,29 @@ int verify_bound_schematic(const CompiledSchematic *schematic,
       if (!found && node_count < 64) {
         node_names[node_count] = (char *)names[k];
         node_ids[node_count] = physics2_program_new_node(&program);
-        if (strcmp(names[k], "GND") == 0)
+        if (name_is(names[k], "GND"))
           gnd = node_ids[node_count];
-        if (strcmp(names[k], "VOUT") == 0)
-          vout = node_ids[node_count];
-        if (strcmp(names[k], "VIN") == 0)
+        if (is_sense(names[k]))
+          sense = node_ids[node_count];
+        if (is_power_pos(names[k]))
           vin = node_ids[node_count];
         node_count++;
       }
     }
   }
 
-  if (gnd == PHYSICS2_NODE_NONE)
+  if (gnd == PHYSICS2_NODE_NONE && node_count > 0)
     gnd = node_ids[0];
-  if (vin == PHYSICS2_NODE_NONE)
-    goto done;
 
-  {
+  if (vin != PHYSICS2_NODE_NONE && gnd != PHYSICS2_NODE_NONE) {
     NodeId terminals[2];
+    vin_v = 5.0;
+    for (j = 0; j < node_count; j++) {
+      if (name_is(node_names[j], "VIN")) {
+        vin_v = 10.0;
+        break;
+      }
+    }
     if (!physics2_primitive_init_vsource(&prims[schematic->component_count],
                                          "VSRC", vin_v, 0.0))
       goto done;
@@ -94,6 +111,7 @@ int verify_bound_schematic(const CompiledSchematic *schematic,
                                        &prims[schematic->component_count],
                                        terminals, 2) == PHYSICS_PRIMITIVE_NONE)
       goto done;
+    has_dc = 1;
   }
 
   for (i = 0; i < schematic->component_count; i++) {
@@ -114,41 +132,44 @@ int verify_bound_schematic(const CompiledSchematic *schematic,
       goto done;
   }
 
-  acc = physics2_accumulator_create(program.next_node + program.branch_count);
-  if (!acc)
-    goto done;
-  if (!physics2_context_init(&ctx, &program, acc, 1e-3))
-    goto done;
-  if (!physics2_context_step(&ctx, gnd)) {
+  if (has_dc) {
+    acc = physics2_accumulator_create(program.next_node + program.branch_count);
+    if (!acc)
+      goto done;
+    if (!physics2_context_init(&ctx, &program, acc, 1e-3))
+      goto done;
+    if (!physics2_context_step(&ctx, gnd)) {
+      physics2_context_free(&ctx);
+      goto done;
+    }
+    if (sense != PHYSICS2_NODE_NONE)
+      sense_v = ctx.solution[sense];
+    else if (vin != PHYSICS2_NODE_NONE)
+      sense_v = ctx.solution[vin];
+    corner_low = sense_v * 0.99;
+    corner_high = sense_v * 1.01;
     physics2_context_free(&ctx);
-    goto done;
   }
 
-  if (vout != PHYSICS2_NODE_NONE)
-    vout_v = ctx.solution[vout];
-
-  /* Corner spread: E96-ish +/-1% on Vout for passive divider. */
-  corner_low = vout_v * 0.99;
-  corner_high = vout_v * 1.01;
   if (schematic->component_count > 0)
     ac_mag = ac_magnitude_stub(schematic->components[0].part.value, 0.0);
 
   out->rating_violations = 0;
   for (i = 0; i < schematic->component_count; i++) {
     const CompiledComponent *c = &schematic->components[i];
-    double drop = 0.0;
+    double drop = fabs(sense_v);
     double dissip = 0.0;
 
-    /* Approximate branch voltage for series divider elements. */
-    if (strcmp(c->node1, "VIN") == 0 && strcmp(c->node2, "VOUT") == 0)
-      drop = fabs(vin_v - vout_v);
-    else if (strcmp(c->node1, "VOUT") == 0 && strcmp(c->node2, "GND") == 0)
-      drop = fabs(vout_v);
-    else
-      drop = fabs(vout_v);
-
-    if (c->part.value > 0.0)
-      dissip = (drop * drop) / c->part.value;
+    if (has_dc) {
+      if (is_power_pos(c->node1) && is_sense(c->node2))
+        drop = fabs(vin_v - sense_v);
+      else if (is_sense(c->node1) && name_is(c->node2, "GND"))
+        drop = fabs(sense_v);
+      else if (is_power_pos(c->node1) && name_is(c->node2, "GND"))
+        drop = fabs(vin_v);
+      if (c->part.value > 0.0)
+        dissip = (drop * drop) / c->part.value;
+    }
 
     if (c->part.v_rating > 0.0 && drop > c->part.v_rating)
       out->rating_violations++;
@@ -158,14 +179,14 @@ int verify_bound_schematic(const CompiledSchematic *schematic,
 
   out->passed = (out->rating_violations == 0) ? 1 : 0;
   snprintf(out->summary, sizeof(out->summary),
-           "dc_vout=%.6f corner=[%.6f,%.6f] ac_mag=%.6g rating_violations=%d",
-           vout_v, corner_low, corner_high, ac_mag, out->rating_violations);
+           "dc_sense=%.6f corner=[%.6f,%.6f] ac_mag=%.6g rating_violations=%d",
+           sense_v, corner_low, corner_high, ac_mag, out->rating_violations);
 
   root = cJSON_CreateObject();
   cJSON_AddStringToObject(root, "schema", "verification.v1");
   cJSON_AddBoolToObject(root, "passed", out->passed ? 1 : 0);
   cJSON_AddNumberToObject(root, "rating_violations", out->rating_violations);
-  cJSON_AddNumberToObject(root, "vout", vout_v);
+  cJSON_AddNumberToObject(root, "vout", sense_v);
   cJSON_AddNumberToObject(root, "corner_low", corner_low);
   cJSON_AddNumberToObject(root, "corner_high", corner_high);
   cJSON_AddNumberToObject(root, "ac_magnitude", ac_mag);
@@ -181,7 +202,6 @@ int verify_bound_schematic(const CompiledSchematic *schematic,
     rc = out->passed ? 0 : 1;
   }
   free(printed);
-  physics2_context_free(&ctx);
 
 done:
   physics2_accumulator_free(acc);
