@@ -18,3 +18,5 @@ gemini_resp.json
 /out_local/
 /out_demo/
 /out_live/
+
+.vercel

@@ -536,9 +536,9 @@ int compiler_write_kicad_sch(const char *filename,
     return 0;
 
   fprintf(fp, "(kicad_sch\n"
-              "\t(version 20250114)\n"
+              "\t(version 20231120)\n"
               "\t(generator \"eeschema\")\n"
-              "\t(generator_version \"9.0\")\n"
+              "\t(generator_version \"8.0\")\n"
               "\t(uuid \"00000000-0000-4000-8000-000000000001\")\n"
               "\t(paper \"A4\")\n"
               "\t(lib_symbols\n");
