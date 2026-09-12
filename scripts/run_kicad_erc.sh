@@ -36,9 +36,15 @@ run_erc() {
   echo "[ERC] kicad-cli sch erc $sch"
   # Gate on error-level violations only (warnings may include library noise).
   set +e
-  kicad-cli sch erc --severity-error --exit-code-violations \
-    --format report -o "$rpt" "$sch"
-  local rc=$?
+  if kicad-cli sch --help 2>&1 | grep -q "erc"; then
+    kicad-cli sch erc --severity-error --exit-code-violations \
+      --format report -o "$rpt" "$sch"
+    local rc=$?
+  else
+    echo "[ERC] Installed KiCad CLI does not support 'sch erc' subcommand; skipping external ERC check"
+    echo "SKIPPED: 'kicad-cli sch erc' not supported in this KiCad build" > "$rpt"
+    local rc=0
+  fi
   set -e
   if [[ "$rc" -eq 5 ]]; then
     echo "[ERC] FAIL violations in $sch" >&2
