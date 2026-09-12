@@ -1,3 +1,14 @@
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE
+#include <time.h>
+#include <unistd.h>
+#define GEMINI_CURL "curl"
+#else
+#include <windows.h>
+#define GEMINI_CURL "curl.exe"
+#endif
+
 #include "gemini_schematic.h"
 
 #include "cJSON.h"
@@ -6,14 +17,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifdef _WIN32
-#include <windows.h>
-#define GEMINI_CURL "curl.exe"
-#else
-#include <unistd.h>
-#define GEMINI_CURL "curl"
-#endif
 
 static const char *api_key(void) {
   const char *k = getenv("GEMINI_API_KEY");
@@ -72,7 +75,10 @@ static void sleep_ms(unsigned ms) {
 #ifdef _WIN32
   Sleep(ms);
 #else
-  usleep((useconds_t)ms * 1000u);
+  struct timespec req;
+  req.tv_sec = (time_t)(ms / 1000u);
+  req.tv_nsec = (long)((ms % 1000u) * 1000000L);
+  (void)nanosleep(&req, NULL);
 #endif
 }
 

@@ -220,12 +220,33 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _resolve_path(self) -> str:
+        # 1. Check reverse proxy / Vercel rewrite headers
+        for hdr in ("x-forwarded-url", "x-real-url", "x-matched-path"):
+            val = self.headers.get(hdr)
+            if val:
+                return val.split("?")[0].rstrip("/")
+        # 2. Check path or __path query parameter from rewrites
+        if "?" in self.path:
+            query = self.path.split("?", 1)[1]
+            for part in query.split("&"):
+                if part.startswith("path=") or part.startswith("__path="):
+                    val = unquote(part.split("=", 1)[1])
+                    if not val.startswith("/"):
+                        val = "/" + val
+                    if not val.startswith("/api/"):
+                        val = "/api" + val
+                    return val.rstrip("/")
+        return self.path.split("?")[0].rstrip("/")
+
     def do_GET(self) -> None:  # noqa: N802
-        clean_path = self.path.split("?")[0]
-        if clean_path.startswith("/api/runs/") or clean_path.startswith("/runs/"):
-            self._serve_run_file()
+        resolved = self._resolve_path()
+        if resolved.startswith("/api/runs/") or resolved.startswith("/runs/"):
+            self._serve_run_file(resolved)
             return
-        if clean_path in ("/api/health", "/health"):
+        if resolved in ("/api/health", "/health") or (
+            resolved in ("/api/index.py", "/api") and "health" in self.path
+        ):
             has_key = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("SYNTH_LLM_API_KEY"))
             try:
                 synth_path = str(find_synth())
@@ -237,8 +258,9 @@ class Handler(SimpleHTTPRequestHandler):
             self.path = "/index.html"
         return SimpleHTTPRequestHandler.do_GET(self)
 
-    def _serve_run_file(self) -> None:
-        parts = [p for p in unquote(self.path).split("?")[0].split("/") if p]
+    def _serve_run_file(self, target_path: str | None = None) -> None:
+        target = target_path or self._resolve_path()
+        parts = [p for p in unquote(target).split("?")[0].split("/") if p]
         # Matches ["api", "runs", run_id, filename] or ["runs", run_id, filename]
         if len(parts) >= 4 and parts[0] == "api" and parts[1] == "runs":
             run_id = parts[2]
@@ -279,8 +301,8 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self) -> None:  # noqa: N802
-        clean_path = self.path.split("?")[0].rstrip("/")
-        if clean_path not in ("/api/chat", "/chat"):
+        resolved = self._resolve_path()
+        if resolved not in ("/api/chat", "/chat", "/api/index.py", "/api/index", "/api"):
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length", "0"))
