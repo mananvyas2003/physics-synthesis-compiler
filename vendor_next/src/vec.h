@@ -5,12 +5,17 @@
 
 /*
  * Hidden header immediately preceding the user array.
- * max_align_t keeps the start of the user array suitably aligned.
+ * Alignment member keeps the start of the user array suitably aligned.
+ * (Avoid max_align_t — not available in MSVC's C mode.)
  */
 typedef struct {
     size_t length;
     size_t capacity;
-    max_align_t alignment;
+    union {
+        long double ld;
+        long long ll;
+        void *p;
+    } alignment;
 } VecHeader;
 
 #define vec_header(v) \
