@@ -80,6 +80,26 @@ static int run_g16(FILE *out, const char *fixture_root) {
   return golden_g16_structural_erc(out, fixture_root);
 }
 
+static int run_g17(FILE *out, const char *fixture_root) {
+  return golden_g17_led_series(out, fixture_root);
+}
+
+static int run_g18(FILE *out, const char *fixture_root) {
+  return golden_g18_rc_low_pass(out, fixture_root);
+}
+
+static int run_g19(FILE *out, const char *fixture_root) {
+  return golden_g19_invalid_role(out, fixture_root);
+}
+
+static int run_g20(FILE *out, const char *fixture_root) {
+  return golden_g20_rl_low_pass(out, fixture_root);
+}
+
+static int run_g21(FILE *out, const char *fixture_root) {
+  return golden_g21_ldo_3v3(out, fixture_root);
+}
+
 static char *read_file(const char *path) {
   FILE *fp;
   long size;
@@ -228,6 +248,12 @@ int main(int argc, char **argv) {
        "tests/golden/g15_compose_expand_sch/expected.txt", run_g15},
       {"g16_structural_erc", "tests/golden/g16_structural_erc/expected.txt",
        run_g16},
+      {"g17_led_series", "tests/golden/g17_led_series/expected.txt", run_g17},
+      {"g18_rc_low_pass", "tests/golden/g18_rc_low_pass/expected.txt", run_g18},
+      {"g19_invalid_role", "tests/golden/g19_invalid_role/expected.txt",
+       run_g19},
+      {"g20_rl_low_pass", "tests/golden/g20_rl_low_pass/expected.txt", run_g20},
+      {"g21_ldo_3v3", "tests/golden/g21_ldo_3v3/expected.txt", run_g21},
   };
   size_t i;
   int failures = 0;

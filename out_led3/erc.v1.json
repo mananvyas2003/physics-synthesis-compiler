@@ -1,0 +1,6 @@
+{
+	"schema":	"erc.v1",
+	"passed":	true,
+	"errors":	[],
+	"summary":	"structural ERC: pin connectivity ok"
+}

@@ -48,6 +48,7 @@ function addBubble(role, text, opts = {}) {
       "verification.v1.json": "Verify",
       "prompt_schematic.json": "IR JSON",
       "composed_schematic.json": "Composed JSON",
+      "mfg-dfm.v1.json": "DFM Report",
     };
     Object.entries(opts.artifacts).forEach(([name, href]) => {
       const a = document.createElement("a");
@@ -84,6 +85,70 @@ function addBubble(role, text, opts = {}) {
 }
 
 ensureEmpty();
+
+const catStatus = document.getElementById("cat-status");
+const partsFile = document.getElementById("parts-file");
+const dfmFile = document.getElementById("dfm-file");
+
+async function refreshCatalogue() {
+  try {
+    const res = await fetch("/api/catalogue");
+    const data = await res.json();
+    catStatus.textContent = `${data.parts ?? "?"} DEMO/user parts · DFM “${
+      data.dfm_name || "standard"
+    }”`;
+  } catch (err) {
+    catStatus.textContent = "Catalogue unavailable";
+  }
+}
+
+partsFile?.addEventListener("change", async () => {
+  const file = partsFile.files?.[0];
+  if (!file) return;
+  setStatus("Importing parts…");
+  try {
+    const buf = await file.arrayBuffer();
+    const res = await fetch("/api/upload/parts", {
+      method: "POST",
+      headers: { "Content-Type": "text/csv" },
+      body: buf,
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "import failed");
+    setStatus("Parts imported");
+    await refreshCatalogue();
+  } catch (err) {
+    setStatus("Parts import failed");
+    addBubble("bot", String(err), { error: true });
+  } finally {
+    partsFile.value = "";
+  }
+});
+
+dfmFile?.addEventListener("change", async () => {
+  const file = dfmFile.files?.[0];
+  if (!file) return;
+  setStatus("Updating DFM…");
+  try {
+    const text = await file.text();
+    const res = await fetch("/api/upload/dfm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: text,
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "DFM upload failed");
+    setStatus("DFM profile saved");
+    await refreshCatalogue();
+  } catch (err) {
+    setStatus("DFM upload failed");
+    addBubble("bot", String(err), { error: true });
+  } finally {
+    dfmFile.value = "";
+  }
+});
+
+refreshCatalogue();
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();

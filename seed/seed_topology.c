@@ -1,26 +1,18 @@
 #include "seed_topology.h"
 
 #include "cJSON.h"
+#include "diag_error.h"
+#include "part_lib.h"
+#include "unit_parse.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 static PartTypes part_type_from_string(const char *text) {
-  if (!text)
-    return PART_OTHER;
-
-  if (strcmp(text, "resistor") == 0)
-    return PART_RESISTOR;
-  if (strcmp(text, "capacitor") == 0)
-    return PART_CAPACITOR;
-  if (strcmp(text, "inductor") == 0)
-    return PART_INDUCTOR;
-  if (strcmp(text, "diode") == 0)
-    return PART_DIODE;
-  if (strcmp(text, "transistor") == 0)
-    return PART_TRANSISTOR;
-
+  PartTypes t = part_lib_db_type(text);
+  if (t != PART_OTHER || part_lib_find(text) != NULL)
+    return t;
   return PART_OTHER;
 }
 
@@ -164,24 +156,40 @@ int seed_load_topology_json(DB *db, const char *json_path) {
           cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "package"));
       value = cJSON_GetObjectItemCaseSensitive(item, "value");
 
-      if (!mpn || !type || !package || !cJSON_IsNumber(value)) {
+      if (!mpn || !type || !package ||
+          unit_parse_number_or_string(value, &part.value) != 0 ||
+          part.value <= 0.0) {
         cJSON_Delete(root);
-        fprintf(stderr, "[SEED] Invalid parts entry\n");
+        diag_set_error(
+            "Invalid parts entry (mpn/type/package/value). Value must be a "
+            "positive number or engineering string.");
+        fprintf(stderr, "[SEED] %s\n", diag_last_error());
+        return 1;
+      }
+      if (part_type_from_string(type) == PART_OTHER) {
+        cJSON_Delete(root);
+        diag_set_error(
+            "%s components are not currently available in the active library. "
+            "Supported: resistor, capacitor, diode, led.",
+            type);
+        fprintf(stderr, "[SEED] %s\n", diag_last_error());
         return 1;
       }
 
       strncpy(part.mpn, mpn, sizeof(part.mpn) - 1);
       strncpy(part.package, package, sizeof(part.package) - 1);
       part.type = part_type_from_string(type);
-      part.value = value->valuedouble;
       part.tolerance_class = TOLERANCE_E96;
       {
         cJSON *vr = cJSON_GetObjectItemCaseSensitive(item, "v_rating");
         cJSON *pr = cJSON_GetObjectItemCaseSensitive(item, "power_rating_w");
+        cJSON *ir = cJSON_GetObjectItemCaseSensitive(item, "i_rating");
         if (cJSON_IsNumber(vr))
           part.v_rating = vr->valuedouble;
         if (cJSON_IsNumber(pr))
           part.power_rating_w = pr->valuedouble;
+        if (cJSON_IsNumber(ir))
+          part.i_rating = ir->valuedouble;
       }
 
       result = DB_InsertPartFull(db, &part, &part_id);
@@ -286,6 +294,9 @@ int seed_load_topology_json(DB *db, const char *json_path) {
         cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "pin"));
     const char *node =
         cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "node"));
+    const char *ptype = NULL;
+    cJSON *comp;
+    char norm_pin[32];
     int64_t component_id;
     int64_t node_id;
 
@@ -294,16 +305,47 @@ int seed_load_topology_json(DB *db, const char *json_path) {
       return 1;
     }
 
-    component_id = find_component_id(component_rows, component_count, role);
-    node_id = find_node_id(node_rows, node_count, node);
-
-    if (component_id <= 0 || node_id <= 0) {
+    cJSON_ArrayForEach(comp, components) {
+      const char *r =
+          cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(comp, "role"));
+      if (r && strcmp(r, role) == 0) {
+        ptype = cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(comp, "part_type"));
+        break;
+      }
+    }
+    if (part_lib_normalize_pin(ptype, pin, norm_pin, sizeof(norm_pin)) != 0) {
       cJSON_Delete(root);
-      fprintf(stderr, "[SEED] Unknown role/node in connection\n");
+      diag_set_error(
+          "Role '%s' (%s) uses unknown pin '%s'. Check part library pin names.",
+          role, ptype ? ptype : "?", pin);
+      fprintf(stderr, "[SEED] %s\n", diag_last_error());
       return 1;
     }
 
-    result = DB_AddTopologyConnection(db, component_id, pin, node_id, NULL);
+    component_id = find_component_id(component_rows, component_count, role);
+    node_id = find_node_id(node_rows, node_count, node);
+
+    if (component_id <= 0) {
+      cJSON_Delete(root);
+      diag_set_error(
+          "Unknown role '%s' in connection (not listed in components[]).",
+          role);
+      fprintf(stderr, "[SEED] %s\n", diag_last_error());
+      return 1;
+    }
+    if (node_id <= 0) {
+      cJSON_Delete(root);
+      diag_set_error(
+          "Unknown node '%s' in connection for role '%s' (not listed in "
+          "nodes[]).",
+          node, role);
+      fprintf(stderr, "[SEED] %s\n", diag_last_error());
+      return 1;
+    }
+
+    result =
+        DB_AddTopologyConnection(db, component_id, norm_pin, node_id, NULL);
     if (result != DB_OK && result != DB_DUPLICATE) {
       cJSON_Delete(root);
       return 1;

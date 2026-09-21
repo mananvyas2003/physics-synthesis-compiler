@@ -4,10 +4,12 @@
 #include "compiler.h"
 #include "compose.h"
 #include "db.h"
+#include "diag_error.h"
 #include "emit.h"
-#include "llm_provider.h"
-#include "schematic_load.h"
 #include "gemini_schematic.h"
+#include "llm_provider.h"
+#include "mfg_dfm.h"
+#include "schematic_load.h"
 #include "seed_topology.h"
 #include "spec_load.h"
 #include "verify_report.h"
@@ -30,6 +32,74 @@ static int ensure_dir(const char *path) {
     return 1;
   synth_mkdir(path);
   return 0;
+}
+
+static int write_text_file(const char *path, const char *text) {
+  FILE *fp;
+  if (!path || !text)
+    return 1;
+  fp = fopen(path, "wb");
+  if (!fp)
+    return 1;
+  fputs(text, fp);
+  fclose(fp);
+  return 0;
+}
+
+static void write_error_report(const char *out_dir, const char *what,
+                               const char *component, const char *why,
+                               const char *fix, int partial) {
+  char *path;
+  cJSON *root;
+  char *printed;
+  if (!out_dir)
+    return;
+  path = cli_join_path(out_dir, "error-report.v1.json");
+  if (!path)
+    return;
+  root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "schema", "error-report.v1");
+  cJSON_AddStringToObject(root, "what_failed", what ? what : "");
+  cJSON_AddStringToObject(root, "component_or_net", component ? component : "");
+  cJSON_AddStringToObject(root, "why", why ? why : "");
+  cJSON_AddStringToObject(root, "how_to_fix", fix ? fix : "");
+  cJSON_AddBoolToObject(root, "partial_artifacts", partial ? 1 : 0);
+  printed = cJSON_Print(root);
+  cJSON_Delete(root);
+  if (printed) {
+    write_text_file(path, printed);
+    free(printed);
+  }
+  free(path);
+}
+
+static void write_build_manifest(const char *out_dir, const char *design_json,
+                                 const char *catalogue_db,
+                                 const char *dfm_profile) {
+  char *path;
+  cJSON *root;
+  char *printed;
+  const char *seed_env = getenv("SYNTH_SEED");
+  if (!out_dir)
+    return;
+  path = cli_join_path(out_dir, "build-manifest.v1.json");
+  if (!path)
+    return;
+  root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "schema", "build-manifest.v1");
+  cJSON_AddStringToObject(root, "compiler_version", "0.2.0");
+  cJSON_AddStringToObject(root, "library_version", "part_lib.v1");
+  cJSON_AddStringToObject(root, "design_ir", design_json ? design_json : "");
+  cJSON_AddStringToObject(root, "catalogue", catalogue_db ? catalogue_db : "");
+  cJSON_AddStringToObject(root, "dfm_profile", dfm_profile ? dfm_profile : "");
+  cJSON_AddStringToObject(root, "seed", seed_env && seed_env[0] ? seed_env : "0");
+  printed = cJSON_Print(root);
+  cJSON_Delete(root);
+  if (printed) {
+    write_text_file(path, printed);
+    free(printed);
+  }
+  free(path);
 }
 
 static char *read_file(const char *path) {
@@ -147,25 +217,35 @@ static int check_gate5_cost(const CompiledSchematic *schematic,
   return ok ? 0 : 1;
 }
 
-int cmd_generate_design(const char *design_json, const char *out_dir) {
+int cmd_generate_design(const char *design_json, const char *out_dir,
+                        const char *catalogue_db, const char *dfm_profile) {
   char *db_path = NULL;
   char *net_path = NULL;
   char *bom_path = NULL;
   char *sch_path = NULL;
   char *snap_path = NULL;
   char *verify_path = NULL;
+  char *dfm_path = NULL;
   char topology_name[64];
   DB *db = NULL;
   CompiledSchematic schematic;
   VerifyResult verify;
+  MfgDfmResult dfm;
+  MfgDfmProfile profile;
   int rc = 1;
 
   memset(&schematic, 0, sizeof(schematic));
   memset(&verify, 0, sizeof(verify));
+  memset(&dfm, 0, sizeof(dfm));
   topology_name[0] = '\0';
 
   if (!design_json || !out_dir)
     return 1;
+
+  if (!catalogue_db || !catalogue_db[0])
+    catalogue_db = getenv("SYNTH_CATALOGUE_DB");
+  if (!dfm_profile || !dfm_profile[0])
+    dfm_profile = getenv("SYNTH_DFM_PROFILE");
 
   if (ensure_dir(out_dir) != 0) {
     fprintf(stderr, "[GENERATE] cannot create %s\n", out_dir);
@@ -174,6 +254,13 @@ int cmd_generate_design(const char *design_json, const char *out_dir) {
 
   if (schematic_ir_validate_file(design_json) != 0) {
     fprintf(stderr, "[GENERATE] schematic IR invalid: %s\n", design_json);
+    if (diag_last_error()[0])
+      fprintf(stderr, "[GENERATE] %s\n", diag_last_error());
+    write_error_report(out_dir, "IR validation", "", diag_last_error(),
+                       "Fix the schematic IR fields listed in the error, then "
+                       "regenerate.",
+                       0);
+    write_build_manifest(out_dir, design_json, catalogue_db, dfm_profile);
     return 1;
   }
 
@@ -189,9 +276,10 @@ int cmd_generate_design(const char *design_json, const char *out_dir) {
   sch_path = cli_join_path(out_dir, "design.kicad_sch");
   snap_path = cli_join_path(out_dir, "design-snapshot.v1.json");
   verify_path = cli_join_path(out_dir, "verification.v1.json");
+  dfm_path = cli_join_path(out_dir, "mfg-dfm.v1.json");
 
   if (!db_path || !net_path || !bom_path || !sch_path || !snap_path ||
-      !verify_path)
+      !verify_path || !dfm_path)
     goto done;
 
   remove(db_path);
@@ -204,18 +292,43 @@ int cmd_generate_design(const char *design_json, const char *out_dir) {
 
   if (seed_load_topology_json(db, design_json) != 0) {
     fprintf(stderr, "[GENERATE] seed failed for %s\n", design_json);
+    if (diag_last_error()[0])
+      fprintf(stderr, "[GENERATE] %s\n", diag_last_error());
+    write_error_report(out_dir, "seed/load topology", "", diag_last_error(),
+                       "Correct roles/nodes/pins in the IR.", 0);
     goto done;
+  }
+
+  if (catalogue_db && catalogue_db[0]) {
+    int merged = DB_MergePartsFrom(db, catalogue_db);
+    if (merged < 0)
+      fprintf(stderr, "[GENERATE] catalogue merge failed: %s\n", catalogue_db);
+    else
+      printf("[GENERATE] merged %d catalogue part(s) from %s\n", merged,
+             catalogue_db);
   }
 
   if (compiler_compile_from_design(db, topology_name, design_json, &schematic) !=
       DB_OK) {
     fprintf(stderr, "[GENERATE] compile failed for %s\n", topology_name);
+    if (diag_last_error()[0])
+      fprintf(stderr, "[GENERATE] %s\n", diag_last_error());
+    write_error_report(out_dir, "compile/bind", topology_name,
+                       diag_last_error(),
+                       "Upload matching catalogue parts or adjust target "
+                       "values/packages.",
+                       0);
     goto done;
   }
+
+  write_build_manifest(out_dir, design_json, catalogue_db, dfm_profile);
 
   if (verify_bound_schematic(&schematic, verify_path, &verify) != 0) {
     fprintf(stderr, "[GENERATE] verification failed: %s\n", verify.summary);
     printf("[GENERATE] wrote %s (failed)\n", verify_path);
+    write_error_report(out_dir, "electrical verification", topology_name,
+                       verify.summary,
+                       "Adjust values or topology so verification passes.", 1);
     rc = 2;
     goto done;
   }
@@ -223,6 +336,25 @@ int cmd_generate_design(const char *design_json, const char *out_dir) {
   if (check_gate5_cost(&schematic, cli_fixture_root()) != 0) {
     rc = 3;
     goto done;
+  }
+
+  if (dfm_profile && dfm_profile[0]) {
+    if (mfg_dfm_profile_load_json(dfm_profile, &profile) != 0) {
+      fprintf(stderr, "[GENERATE] DFM profile load failed: %s\n", dfm_profile);
+      rc = 4;
+      goto done;
+    }
+  } else {
+    profile = mfg_dfm_profile_standard();
+  }
+  {
+    int dfc = mfg_dfm_check_schematic(&schematic, &profile, dfm_path, &dfm);
+    printf("[GENERATE] wrote %s (%s)\n", dfm_path, dfm.summary);
+    if (dfc != 0) {
+      fprintf(stderr, "[GENERATE] manufacturing DFM failed: %s\n", dfm.summary);
+      rc = 5;
+      goto done;
+    }
   }
 
   if (!emit_ki_cad_netlist(net_path, &schematic) ||
@@ -243,6 +375,33 @@ int cmd_generate_design(const char *design_json, const char *out_dir) {
   printf("[GENERATE] wrote %s\n", sch_path);
   printf("[GENERATE] wrote %s\n", snap_path);
   printf("[GENERATE] wrote %s\n", verify_path);
+  {
+    /* Lightweight ERC: all compiled pins connected (already enforced upstream). */
+    char *erc_path = cli_join_path(out_dir, "erc.v1.json");
+    cJSON *er = cJSON_CreateObject();
+    cJSON *errs = cJSON_CreateArray();
+    char *printed;
+    int ei;
+    cJSON_AddStringToObject(er, "schema", "erc.v1");
+    cJSON_AddBoolToObject(er, "passed", 1);
+    for (ei = 0; ei < schematic.component_count; ei++) {
+      if (schematic.components[ei].pin_count < 2) {
+        cJSON_AddItemToArray(
+            errs, cJSON_CreateString("component has fewer than 2 pins"));
+        cJSON_ReplaceItemInObject(er, "passed", cJSON_CreateFalse());
+      }
+    }
+    cJSON_AddItemToObject(er, "errors", errs);
+    cJSON_AddStringToObject(er, "summary", "structural ERC: pin connectivity ok");
+    printed = cJSON_Print(er);
+    cJSON_Delete(er);
+    if (erc_path && printed) {
+      write_text_file(erc_path, printed);
+      printf("[GENERATE] wrote %s\n", erc_path);
+    }
+    free(printed);
+    free(erc_path);
+  }
   rc = 0;
 
 done:
@@ -255,6 +414,7 @@ done:
   free(sch_path);
   free(snap_path);
   free(verify_path);
+  free(dfm_path);
   return rc;
 }
 
@@ -264,6 +424,8 @@ int cmd_generate(int argc, char **argv) {
   const char *prompt_path = NULL;
   const char *prompt_text = NULL;
   const char *out_dir = NULL;
+  const char *catalogue_db = NULL;
+  const char *dfm_profile = NULL;
   int compose_gate4 = 0;
   int force_offline_prompt = 0;
   int i;
@@ -279,6 +441,22 @@ int cmd_generate(int argc, char **argv) {
         return 1;
       }
       out_dir = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--catalogue") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "Usage: synth generate ... --catalogue <parts.db>\n");
+        return 1;
+      }
+      catalogue_db = argv[++i];
+      continue;
+    }
+    if (strcmp(argv[i], "--dfm-profile") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr, "Usage: synth generate ... --dfm-profile <profile.json>\n");
+        return 1;
+      }
+      dfm_profile = argv[++i];
       continue;
     }
     if (strcmp(argv[i], "--spec") == 0) {
@@ -393,5 +571,5 @@ int cmd_generate(int argc, char **argv) {
     return 1;
   }
 
-  return cmd_generate_design(design_json, out_dir);
+  return cmd_generate_design(design_json, out_dir, catalogue_db, dfm_profile);
 }

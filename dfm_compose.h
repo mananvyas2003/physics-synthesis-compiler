@@ -1,5 +1,5 @@
-#ifndef DFM_H
-#define DFM_H
+#ifndef DFM_COMPOSE_H
+#define DFM_COMPOSE_H
 
 #include <stdbool.h>
 #include <stddef.h>

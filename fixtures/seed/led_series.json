@@ -1,0 +1,36 @@
+{
+  "schema": "schematic-ir.v1",
+  "name": "led_series_indicator",
+  "description": "5V LED with series current-limiting resistor",
+  "category": "Passive",
+  "parts": [
+    {
+      "mpn": "DEMO-330-0603-A",
+      "type": "resistor",
+      "value": 330.0,
+      "package": "0603",
+      "v_rating": 50.0,
+      "power_rating_w": 0.125
+    },
+    {
+      "mpn": "DEMO-LED-RED-0603-A",
+      "type": "led",
+      "value": 2.0,
+      "package": "0603",
+      "v_rating": 5.0,
+      "i_rating": 0.02,
+      "power_rating_w": 0.05
+    }
+  ],
+  "components": [
+    { "role": "R1", "part_type": "resistor", "quantity": 1, "target_value": 330.0, "package": "0603" },
+    { "role": "D1", "part_type": "led", "quantity": 1, "target_value": 2.0, "package": "0603" }
+  ],
+  "nodes": ["5V", "LED_A", "GND"],
+  "connections": [
+    { "role": "R1", "pin": "1", "node": "5V" },
+    { "role": "R1", "pin": "2", "node": "LED_A" },
+    { "role": "D1", "pin": "A", "node": "LED_A" },
+    { "role": "D1", "pin": "K", "node": "GND" }
+  ]
+}

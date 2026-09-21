@@ -1,0 +1,58 @@
+{
+  "schema": "schematic-ir.v1",
+  "name": "npn_switch_led",
+  "description": "NPN low-side switch with LED load",
+  "category": "Analog",
+  "parts": [
+    {
+      "mpn": "DEMO-1K-0603-A",
+      "type": "resistor",
+      "value": 1000.0,
+      "package": "0603",
+      "v_rating": 50.0,
+      "power_rating_w": 0.125
+    },
+    {
+      "mpn": "DEMO-330-0603-A",
+      "type": "resistor",
+      "value": 330.0,
+      "package": "0603",
+      "v_rating": 50.0,
+      "power_rating_w": 0.125
+    },
+    {
+      "mpn": "DEMO-LED-RED-0603-A",
+      "type": "led",
+      "value": 2.0,
+      "package": "0603",
+      "v_rating": 5.0,
+      "i_rating": 0.02
+    },
+    {
+      "mpn": "DEMO-2N3904-SOT23",
+      "type": "transistor",
+      "value": 1.0,
+      "package": "SOT-23",
+      "v_rating": 40.0,
+      "i_rating": 0.2
+    }
+  ],
+  "components": [
+    { "role": "RB", "part_type": "resistor", "quantity": 1, "target_value": 1000.0, "package": "0603" },
+    { "role": "RL", "part_type": "resistor", "quantity": 1, "target_value": 330.0, "package": "0603" },
+    { "role": "D1", "part_type": "led", "quantity": 1, "target_value": 2.0, "package": "0603" },
+    { "role": "Q1", "part_type": "transistor", "quantity": 1, "target_value": 1.0, "package": "SOT-23" }
+  ],
+  "nodes": ["5V", "BASE", "COL", "GND"],
+  "connections": [
+    { "role": "RB", "pin": "1", "node": "5V" },
+    { "role": "RB", "pin": "2", "node": "BASE" },
+    { "role": "Q1", "pin": "B", "node": "BASE" },
+    { "role": "Q1", "pin": "E", "node": "GND" },
+    { "role": "Q1", "pin": "C", "node": "COL" },
+    { "role": "RL", "pin": "1", "node": "5V" },
+    { "role": "RL", "pin": "2", "node": "COL" },
+    { "role": "D1", "pin": "A", "node": "COL" },
+    { "role": "D1", "pin": "K", "node": "GND" }
+  ]
+}

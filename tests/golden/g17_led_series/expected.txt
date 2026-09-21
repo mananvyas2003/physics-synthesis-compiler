@@ -1,0 +1,3 @@
+g17_led_series
+components=2
+passed=1

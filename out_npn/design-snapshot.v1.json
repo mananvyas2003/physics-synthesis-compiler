@@ -1,0 +1,48 @@
+{
+	"schema":	"design-snapshot.v1",
+	"generator":	"physics-synthesis-compiler",
+	"generator_version":	"0.1.0",
+	"topology":	"npn_switch_led",
+	"components":	[{
+			"role":	"RB",
+			"refdes":	"RB",
+			"mpn":	"DEMO-1K-0603-A",
+			"value":	1000,
+			"package":	"0603",
+			"qty":	1
+		}, {
+			"role":	"RL",
+			"refdes":	"RL",
+			"mpn":	"DEMO-330-0603-A",
+			"value":	330,
+			"package":	"0603",
+			"qty":	1
+		}, {
+			"role":	"D1",
+			"refdes":	"D1",
+			"mpn":	"DEMO-LED-RED-0603-A",
+			"value":	2,
+			"package":	"0603",
+			"qty":	1
+		}, {
+			"role":	"Q1",
+			"refdes":	"Q1",
+			"mpn":	"DEMO-2N3904-SOT23",
+			"value":	1,
+			"package":	"SOT-23",
+			"qty":	1
+		}],
+	"nets":	[{
+			"name":	"5V",
+			"pins":	["RB.1", "RL.1"]
+		}, {
+			"name":	"BASE",
+			"pins":	["RB.2", "Q1.B"]
+		}, {
+			"name":	"COL",
+			"pins":	["RL.2", "D1.1", "Q1.C"]
+		}, {
+			"name":	"GND",
+			"pins":	["D1.2", "Q1.E"]
+		}]
+}

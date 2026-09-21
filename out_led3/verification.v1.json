@@ -1,0 +1,16 @@
+{
+	"schema":	"verification.v1",
+	"analysis":	"led_dc_analytical",
+	"passed":	true,
+	"vin_v":	5,
+	"led_vf_v":	2,
+	"led_current_a":	0.00909090909090909,
+	"led_current_mA":	9.09090909090909,
+	"expected_current_min_mA":	1,
+	"expected_current_max_mA":	20,
+	"series_resistor_power_mW":	27.27272727272727,
+	"rating_violations":	0,
+	"warnings":	[],
+	"severity":	"electrical_pass",
+	"summary":	"LED current: 9.09 mA (expected 1.0-20.0 mA); Vf=2.00 V; series resistor power=27.27 mW; result=PASS"
+}

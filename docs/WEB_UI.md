@@ -40,6 +40,22 @@ Type a circuit prompt → **Generate**. Download links appear for:
 - `bom.csv`
 - `design-snapshot.v1.json`
 - `verification.v1.json`
+- `mfg-dfm.v1.json` (manufacturing DFM report)
 - `prompt_schematic.json` (Gemini IR)
+
+## Library uploads (parts + DFM)
+
+The left **Library** panel uses the **project DEMO parts** by default (seeded from `fixtures/seed` + `fixtures/schematics` into `user_data/catalogue.db`). No separate test database.
+
+You can also upload:
+
+| Upload | Endpoint | Format |
+|--------|----------|--------|
+| Parts CSV | `POST /api/upload/parts` | JLCPCB-style CSV (same as `synth db import`) |
+| DFM profile | `POST /api/upload/dfm` | JSON matching `fixtures/dfm/standard.json` |
+
+Default DFM profile is **standard** from [electronics_vendor_v2_next `src/dfm.c`](https://github.com/Abheesht04/electronics_vendor_v2_next/blob/main/src/dfm.c) (also `fixtures/dfm/wearable.json`). Checks: floating pins, missing footprints, component height vs profile.
+
+Generate merges the shared catalogue and applies the active DFM profile automatically.
 
 Runs are stored under `out_web/<run_id>/`.

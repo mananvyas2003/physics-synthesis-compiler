@@ -1,0 +1,3 @@
+refdes,value,package,MPN,JLCPCB,quantity,rationale,alternate_mpn,unit_cost
+R1,330,0603,DEMO-330-0603-A,DEMO-330-0603-A,1,selected DEMO-330-0603-A err=1e+03% derate V>=10 P>=0.152; candidates=1,,0.008
+D1,2,0603,DEMO-LED-RED-0603-A,DEMO-LED-RED-0603-A,1,selected DEMO-LED-RED-0603-A err=0% derate V>=10 P>=0; candidates=1,,0.01

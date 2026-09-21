@@ -127,6 +127,12 @@ DBResult DB_GetTopology(DB *db, const char *name,
 
 void DB_PrintAllParts(DB *db);
 
+/* Copy all Parts rows from src_path into dest (UNIQUE mpn: skip duplicates). */
+int DB_MergePartsFrom(DB *dest, const char *src_path);
+
+/* Number of rows in Parts, or -1 on error. */
+int DB_CountParts(DB *db);
+
 #ifdef __cplusplus
 }
 #endif

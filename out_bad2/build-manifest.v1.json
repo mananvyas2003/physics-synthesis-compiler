@@ -1,0 +1,9 @@
+{
+	"schema":	"build-manifest.v1",
+	"compiler_version":	"0.2.0",
+	"library_version":	"part_lib.v1",
+	"design_ir":	"fixtures/seed/invalid_unknown_role.json",
+	"catalogue":	"",
+	"dfm_profile":	"",
+	"seed":	"0"
+}

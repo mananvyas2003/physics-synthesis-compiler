@@ -71,14 +71,24 @@ int emit_design_snapshot_v1(const char *path,
     cJSON_AddStringToObject(net, "name", net_names[i]);
     for (cidx = 0; cidx < schematic->component_count; cidx++) {
       const CompiledComponent *c = &schematic->components[cidx];
-      char pinbuf[96];
-      if (strcmp(c->node1, net_names[i]) == 0) {
-        snprintf(pinbuf, sizeof(pinbuf), "%s.%s", c->role, c->pin1);
-        cJSON_AddItemToArray(pins, cJSON_CreateString(pinbuf));
-      }
-      if (strcmp(c->node2, net_names[i]) == 0) {
-        snprintf(pinbuf, sizeof(pinbuf), "%s.%s", c->role, c->pin2);
-        cJSON_AddItemToArray(pins, cJSON_CreateString(pinbuf));
+      int pc = c->pin_count > 0 ? c->pin_count : 2;
+      int pi;
+      for (pi = 0; pi < pc; pi++) {
+        const char *nn = c->nodes[pi][0] ? c->nodes[pi]
+                         : (pi == 0       ? c->node1
+                            : pi == 1     ? c->node2
+                            : pi == 2     ? c->node3
+                                          : "");
+        const char *pn = c->pins[pi][0] ? c->pins[pi]
+                         : (pi == 0       ? c->pin1
+                            : pi == 1     ? c->pin2
+                            : pi == 2     ? c->pin3
+                                          : "");
+        char pinbuf[96];
+        if (nn[0] && strcmp(nn, net_names[i]) == 0) {
+          snprintf(pinbuf, sizeof(pinbuf), "%s.%s", c->role, pn);
+          cJSON_AddItemToArray(pins, cJSON_CreateString(pinbuf));
+        }
       }
     }
     cJSON_AddItemToObject(net, "pins", pins);

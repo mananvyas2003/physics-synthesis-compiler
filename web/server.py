@@ -26,8 +26,14 @@ else:
 
 if os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
     RUNS = Path("/tmp/out_web")
+    USER_DATA = Path("/tmp/user_data")
 else:
     RUNS = ROOT / "out_web"
+    USER_DATA = ROOT / "user_data"
+
+CATALOGUE_DB = USER_DATA / "catalogue.db"
+DFM_PROFILE = USER_DATA / "dfm_profile.json"
+DEFAULT_DFM = ROOT / "fixtures" / "dfm" / "standard.json"
 
 HOST = os.environ.get("SYNTH_WEB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SYNTH_WEB_PORT", "8765"))
@@ -111,7 +117,207 @@ def find_synth() -> Path:
     )
 
 
+def ensure_user_data() -> None:
+    """Seed/merge shared catalogue from project DEMO fixture parts; default DFM."""
+    import sqlite3
+
+    USER_DATA.mkdir(parents=True, exist_ok=True)
+    if not DFM_PROFILE.is_file() and DEFAULT_DFM.is_file():
+        DFM_PROFILE.write_text(DEFAULT_DFM.read_text(encoding="utf-8"), encoding="utf-8")
+
+    type_map = {
+        "resistor": 0,
+        "capacitor": 1,
+        "inductor": 2,
+        "diode": 3,
+        "led": 3,
+        "transistor": 4,
+        "bjt": 4,
+        "mosfet": 4,
+        "opamp": 5,
+        "regulator": 5,
+        "ldo": 5,
+        "switch": 6,
+        "connector": 6,
+        "battery": 7,
+    }
+    con = sqlite3.connect(str(CATALOGUE_DB))
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS Parts ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, mpn TEXT UNIQUE NOT NULL, "
+        "type INTEGER NOT NULL, value REAL NOT NULL, package TEXT NOT NULL, "
+        "v_rating REAL, i_rating REAL, esr_ohms REAL, power_rating_w REAL, "
+        "tolerance_class INTEGER)"
+    )
+    seen = set()
+    for pattern in (
+        "fixtures/seed/*.json",
+        "fixtures/schematics/*.json",
+    ):
+        for path in ROOT.glob(pattern):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            for part in data.get("parts") or []:
+                mpn = part.get("mpn")
+                if not mpn or mpn in seen:
+                    continue
+                seen.add(mpn)
+                con.execute(
+                    "INSERT OR IGNORE INTO Parts "
+                    "(mpn, type, value, package, v_rating, i_rating, "
+                    "esr_ohms, power_rating_w, tolerance_class) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        mpn,
+                        type_map.get(str(part.get("type", "")).lower(), 7),
+                        float(part.get("value") or 0),
+                        str(part.get("package") or "0603"),
+                        float(part.get("v_rating") or 0),
+                        float(part.get("i_rating") or 0),
+                        float(part.get("esr_ohms") or 0),
+                        float(part.get("power_rating_w") or 0),
+                        2,  # E24 default
+                    ),
+                )
+    con.commit()
+    con.close()
+
+
+def catalogue_status() -> dict:
+    ensure_user_data()
+    parts = 0
+    if CATALOGUE_DB.is_file():
+        try:
+            import sqlite3
+
+            con = sqlite3.connect(str(CATALOGUE_DB))
+            row = con.execute("SELECT COUNT(*) FROM Parts").fetchone()
+            parts = int(row[0]) if row else 0
+            con.close()
+        except Exception:
+            parts = -1
+    profile_name = "standard"
+    if DFM_PROFILE.is_file():
+        try:
+            profile_name = json.loads(DFM_PROFILE.read_text(encoding="utf-8")).get(
+                "name", "standard"
+            )
+        except json.JSONDecodeError:
+            pass
+    return {
+        "parts": parts,
+        "catalogue": str(CATALOGUE_DB),
+        "dfm_profile": str(DFM_PROFILE if DFM_PROFILE.is_file() else DEFAULT_DFM),
+        "dfm_name": profile_name,
+        "source": "project DEMO fixtures (+ optional user CSV uploads)",
+    }
+
+
+def import_parts_csv(csv_bytes: bytes) -> dict:
+    ensure_user_data()
+    synth = find_synth()
+    USER_DATA.mkdir(parents=True, exist_ok=True)
+    text = csv_bytes.decode("utf-8", errors="replace")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return {"ok": False, "error": "CSV is empty"}
+    header = [h.strip().lower() for h in lines[0].split(",")]
+    required = {"mpn", "type", "value", "package"}
+    missing = required - set(header)
+    if missing:
+        return {
+            "ok": False,
+            "error": f"CSV missing required columns: {', '.join(sorted(missing))}",
+            "preview": [],
+        }
+    preview = []
+    for ln in lines[1:6]:
+        cols = [c.strip() for c in ln.split(",")]
+        row = {header[i]: cols[i] if i < len(cols) else "" for i in range(len(header))}
+        preview.append(row)
+    # Duplicate MPN detection in upload
+    mpns = []
+    for ln in lines[1:]:
+        cols = [c.strip() for c in ln.split(",")]
+        if cols:
+            mpns.append(cols[0])
+    dupes = sorted({m for m in mpns if mpns.count(m) > 1})
+    csv_path = USER_DATA / "upload_parts.csv"
+    csv_path.write_bytes(csv_bytes)
+    # Merge into existing catalogue: import into temp db then merge via DB_MergePartsFrom
+    # synth db import replaces db — so import to temp then merge with Python/sqlite OR
+    # use: import to temp, then C merge. Easiest: if no catalogue, import directly;
+    # else import to temp and copy rows.
+    import sqlite3
+    import shutil
+
+    temp_db = USER_DATA / "_upload_parts.db"
+    if temp_db.exists():
+        temp_db.unlink()
+    proc = subprocess.run(
+        [str(synth), "db", "import", str(csv_path), str(temp_db)],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        return {
+            "ok": False,
+            "error": proc.stderr.strip() or proc.stdout.strip() or "import failed",
+        }
+    if not CATALOGUE_DB.is_file():
+        shutil.copy2(temp_db, CATALOGUE_DB)
+    else:
+        src = sqlite3.connect(str(temp_db))
+        dst = sqlite3.connect(str(CATALOGUE_DB))
+        n = 0
+        for row in src.execute(
+            "SELECT mpn, type, value, package, v_rating, i_rating, "
+            "esr_ohms, power_rating_w, tolerance_class FROM Parts"
+        ):
+            try:
+                dst.execute(
+                    "INSERT OR IGNORE INTO Parts "
+                    "(mpn, type, value, package, v_rating, i_rating, "
+                    "esr_ohms, power_rating_w, tolerance_class) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    row,
+                )
+                n += dst.total_changes
+            except sqlite3.Error:
+                pass
+        dst.commit()
+        dst.close()
+        src.close()
+    status = catalogue_status()
+    status["ok"] = True
+    status["imported"] = True
+    status["preview"] = preview
+    if dupes:
+        status["duplicate_mpns_in_upload"] = dupes
+    return status
+
+
+def save_dfm_profile(raw: bytes) -> dict:
+    ensure_user_data()
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return {"ok": False, "error": f"invalid DFM JSON: {exc}"}
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "DFM profile must be a JSON object"}
+    # Fill defaults from standard profile fields
+    base = json.loads(DEFAULT_DFM.read_text(encoding="utf-8")) if DEFAULT_DFM.is_file() else {}
+    base.update(data)
+    DFM_PROFILE.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
+    return {"ok": True, **catalogue_status()}
+
+
 def run_generate(prompt: str) -> dict:
+    ensure_user_data()
     synth = find_synth()
     run_id = time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
     out_dir = RUNS / run_id
@@ -126,6 +332,11 @@ def run_generate(prompt: str) -> dict:
 
     has_key = bool(env.get("GEMINI_API_KEY") or env.get("SYNTH_LLM_API_KEY"))
     cmd = [str(synth), "generate", "--prompt-text", prompt, "-o", str(out_dir)]
+    if CATALOGUE_DB.is_file():
+        cmd.extend(["--catalogue", str(CATALOGUE_DB)])
+    dfm = DFM_PROFILE if DFM_PROFILE.is_file() else DEFAULT_DFM
+    if dfm.is_file():
+        cmd.extend(["--dfm-profile", str(dfm)])
     if not has_key:
         return {
             "ok": False,
@@ -165,6 +376,7 @@ def run_generate(prompt: str) -> dict:
         "bom.csv",
         "design-snapshot.v1.json",
         "verification.v1.json",
+        "mfg-dfm.v1.json",
         "prompt_schematic.json",
         "composed_schematic.json",
     ]
@@ -197,6 +409,7 @@ def run_generate(prompt: str) -> dict:
         "artifacts": artifacts,
         "artifact_contents": artifact_contents,
         "verification_summary": summary,
+        "catalogue": catalogue_status(),
         "error": None
         if ok
         else (proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"),
@@ -252,7 +465,18 @@ class Handler(SimpleHTTPRequestHandler):
                 synth_path = str(find_synth())
             except Exception:
                 synth_path = None
-            self._json(200, {"status": "ok", "has_key": has_key, "synth": synth_path})
+            self._json(
+                200,
+                {
+                    "status": "ok",
+                    "has_key": has_key,
+                    "synth": synth_path,
+                    "catalogue": catalogue_status(),
+                },
+            )
+            return
+        if resolved in ("/api/catalogue", "/catalogue"):
+            self._json(200, catalogue_status())
             return
         if self.path in ("/", "/index.html"):
             self.path = "/index.html"
@@ -302,11 +526,36 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         resolved = self._resolve_path()
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length) if length else b""
+
+        if resolved in ("/api/upload/parts", "/upload/parts"):
+            ctype = self.headers.get("Content-Type", "")
+            if "multipart/form-data" in ctype:
+                # Minimal multipart: find filename= and following blank line + body
+                # Prefer raw body if client sends application/octet-stream / text/csv
+                self._json(400, {"ok": False, "error": "send CSV as raw body (text/csv)"})
+                return
+            if not raw:
+                self._json(400, {"ok": False, "error": "empty CSV body"})
+                return
+            result = import_parts_csv(raw)
+            self._json(200 if result.get("ok") else 400, result)
+            return
+
+        if resolved in ("/api/upload/dfm", "/upload/dfm"):
+            if not raw:
+                self._json(400, {"ok": False, "error": "empty DFM JSON body"})
+                return
+            result = save_dfm_profile(raw)
+            self._json(200 if result.get("ok") else 400, result)
+            return
+
         if resolved not in ("/api/chat", "/chat", "/api/index.py", "/api/index", "/api"):
             self.send_error(404)
             return
-        length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length) if length else b"{}"
+        if not raw:
+            raw = b"{}"
         try:
             payload = json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError:
@@ -328,6 +577,10 @@ def main() -> None:
     load_gemini_key_local(ROOT / "GEMINI_API_KEY.local")
     RUNS.mkdir(parents=True, exist_ok=True)
     STATIC.mkdir(parents=True, exist_ok=True)
+    try:
+        ensure_user_data()
+    except Exception as exc:  # noqa: BLE001
+        print(f"catalogue seed warning: {exc}", file=sys.stderr)
 
     has_key = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("SYNTH_LLM_API_KEY"))
     try:
@@ -338,10 +591,12 @@ def main() -> None:
 
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     url = f"http://{HOST}:{PORT}/"
+    cat = catalogue_status()
     print(f"Physics Synthesis chat UI")
     print(f"  open:  {url}")
     print(f"  synth: {synth}")
     print(f"  gemini key: {'yes' if has_key else 'NO — add to .env'}")
+    print(f"  catalogue parts: {cat.get('parts')} ({cat.get('dfm_name')} DFM)")
     print(f"  runs:  {RUNS}")
     try:
         httpd.serve_forever()

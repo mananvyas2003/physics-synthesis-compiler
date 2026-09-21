@@ -1,7 +1,7 @@
 #ifndef COMPOSE_H
 #define COMPOSE_H
 
-#include "DFM.h"
+#include "dfm_compose.h"
 
 #include <stddef.h>
 

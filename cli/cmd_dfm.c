@@ -1,6 +1,6 @@
 #include "cli.h"
 
-#include "DFM.h"
+#include "dfm_compose.h"
 
 #include <stdio.h>
 #include <string.h>

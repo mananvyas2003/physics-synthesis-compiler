@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-#define DEFAULT_DB_PATH "test_board.db"
+#define DEFAULT_DB_PATH "user_data/catalogue.db"
 
 void print_usage(void);
 
@@ -14,7 +14,8 @@ int cmd_dfm(int argc, char **argv);
 int cmd_compile(int argc, char **argv);
 int cmd_physics2(int argc, char **argv);
 int cmd_generate(int argc, char **argv);
-int cmd_generate_design(const char *design_json, const char *out_dir);
+int cmd_generate_design(const char *design_json, const char *out_dir,
+                        const char *catalogue_db, const char *dfm_profile);
 
 /* Shared by golden_runner and `synth dfm test`. */
 int cmd_dfm_run_suite(void);

@@ -1,0 +1,3 @@
+refdes,value,package,MPN,JLCPCB,quantity,rationale,alternate_mpn,unit_cost
+U1,3.3,SOT-23,DEMO-LDO-3V3-SOT23,DEMO-LDO-3V3-SOT23,1,selected DEMO-LDO-3V3-SOT23 err=0% derate V>=10 P>=0; candidates=1,,0.015
+C1,1e-07,0603,DEMO-100N-0603-A,DEMO-100N-0603-A,1,selected DEMO-100N-0603-A err=0% derate V>=10 P>=0; candidates=1,,0.01

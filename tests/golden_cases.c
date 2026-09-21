@@ -4,6 +4,7 @@
 #include "compiler.h"
 #include "compose.h"
 #include "db.h"
+#include "diag_error.h"
 #include "emit.h"
 #include "physics2_interpreter.h"
 #include "schematic_load.h"
@@ -966,5 +967,177 @@ done:
   remove(compose_ir);
   remove(divider_sch);
   remove(compose_sch);
+  return rc;
+}
+
+static int generate_fixture_case(const char *fixture_root, const char *rel,
+                                 const char *topology, VerifyResult *vout,
+                                 CompiledSchematic *schematic) {
+  char *seed_path = NULL;
+  char *db_path = NULL;
+  char verify_path[] = "golden_phase1_verify.json";
+  DB *db = NULL;
+  int rc = 1;
+
+  seed_path = join_root(fixture_root, rel);
+  db_path = cli_join_path(".", "golden_phase1_tmp.db");
+  if (!seed_path || !db_path)
+    goto done;
+  remove(db_path);
+  db = DB_open(db_path);
+  if (!db)
+    goto done;
+  if (seed_load_topology_json(db, seed_path) != 0)
+    goto done;
+  if (compiler_compile_from_design(db, topology, seed_path, schematic) != DB_OK)
+    goto done;
+  if (verify_bound_schematic(schematic, verify_path, vout) != 0)
+    goto done;
+  rc = 0;
+done:
+  if (db)
+    DB_close(db);
+  if (db_path) {
+    remove(db_path);
+    free(db_path);
+  }
+  free(seed_path);
+  remove(verify_path);
+  return rc;
+}
+
+int golden_g17_led_series(FILE *out, const char *fixture_root) {
+  CompiledSchematic schematic;
+  VerifyResult verify;
+  int rc = 1;
+
+  memset(&schematic, 0, sizeof(schematic));
+  memset(&verify, 0, sizeof(verify));
+  if (!out)
+    return 1;
+  if (generate_fixture_case(fixture_root, "fixtures/seed/led_series.json",
+                            "led_series_indicator", &verify, &schematic) != 0)
+    goto done;
+  fprintf(out, "g17_led_series\n");
+  fprintf(out, "components=%d\n", schematic.component_count);
+  fprintf(out, "passed=%d\n", verify.passed);
+  if (schematic.component_count == 2 && verify.passed)
+    rc = 0;
+done:
+  compiler_free_schematic(&schematic);
+  return rc;
+}
+
+int golden_g18_rc_low_pass(FILE *out, const char *fixture_root) {
+  CompiledSchematic schematic;
+  VerifyResult verify;
+  int rc = 1;
+
+  memset(&schematic, 0, sizeof(schematic));
+  memset(&verify, 0, sizeof(verify));
+  if (!out)
+    return 1;
+  if (generate_fixture_case(fixture_root, "fixtures/seed/rc_low_pass.json",
+                            "rc_low_pass_filter", &verify, &schematic) != 0)
+    goto done;
+  fprintf(out, "g18_rc_low_pass\n");
+  fprintf(out, "components=%d\n", schematic.component_count);
+  fprintf(out, "passed=%d\n", verify.passed);
+  if (schematic.component_count == 2 && verify.passed)
+    rc = 0;
+done:
+  compiler_free_schematic(&schematic);
+  return rc;
+}
+
+int golden_g19_invalid_role(FILE *out, const char *fixture_root) {
+  char *path;
+  int rejected = 0;
+
+  if (!out)
+    return 1;
+  path = join_root(fixture_root, "fixtures/seed/invalid_unknown_role.json");
+  if (!path)
+    return 1;
+  if (schematic_ir_validate_file(path) != 0)
+    rejected = 1;
+  free(path);
+  fprintf(out, "g19_invalid_role\n");
+  fprintf(out, "rejected=%d\n", rejected);
+  if (rejected && strstr(diag_last_error(), "unknown role"))
+    return 0;
+  if (rejected && strstr(diag_last_error(), "Unknown role"))
+    return 0;
+  if (rejected && strstr(diag_last_error(), "R99"))
+    return 0;
+  return rejected ? 0 : 1;
+}
+
+int golden_g20_rl_low_pass(FILE *out, const char *fixture_root) {
+  CompiledSchematic schematic;
+  VerifyResult verify;
+  int rc = 1;
+  memset(&schematic, 0, sizeof(schematic));
+  memset(&verify, 0, sizeof(verify));
+  if (!out)
+    return 1;
+  if (generate_fixture_case(fixture_root, "fixtures/seed/rl_low_pass.json",
+                            "rl_low_pass_filter", &verify, &schematic) != 0)
+    goto done;
+  fprintf(out, "g20_rl_low_pass\n");
+  fprintf(out, "components=%d\n", schematic.component_count);
+  fprintf(out, "passed=%d\n", verify.passed);
+  if (schematic.component_count == 2 && verify.passed)
+    rc = 0;
+done:
+  compiler_free_schematic(&schematic);
+  return rc;
+}
+
+int golden_g21_ldo_3v3(FILE *out, const char *fixture_root) {
+  CompiledSchematic schematic;
+  VerifyResult verify;
+  char *seed_path = NULL;
+  char *db_path = NULL;
+  char verify_path[] = "golden_g21_verify.json";
+  DB *db = NULL;
+  int rc = 1;
+
+  memset(&schematic, 0, sizeof(schematic));
+  memset(&verify, 0, sizeof(verify));
+  if (!out)
+    return 1;
+
+  seed_path = join_root(fixture_root, "fixtures/seed/ldo_3v3.json");
+  db_path = cli_join_path(".", "golden_g21_tmp.db");
+  if (!seed_path || !db_path)
+    goto done;
+  remove(db_path);
+  db = DB_open(db_path);
+  if (!db)
+    goto done;
+  if (seed_load_topology_json(db, seed_path) != 0)
+    goto done;
+  if (compiler_compile_from_design(db, "ldo_3v3", seed_path, &schematic) !=
+      DB_OK)
+    goto done;
+  /* Verify is expected to fail-closed for IC/regulator (returns non-zero). */
+  (void)verify_bound_schematic(&schematic, verify_path, &verify);
+
+  fprintf(out, "g21_ldo_3v3\n");
+  fprintf(out, "components=%d\n", schematic.component_count);
+  fprintf(out, "passed=%d\n", verify.passed);
+  if (schematic.component_count == 2 && !verify.passed)
+    rc = 0;
+done:
+  if (db)
+    DB_close(db);
+  if (db_path) {
+    remove(db_path);
+    free(db_path);
+  }
+  free(seed_path);
+  remove(verify_path);
+  compiler_free_schematic(&schematic);
   return rc;
 }

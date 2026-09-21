@@ -1,0 +1,8 @@
+{
+	"schema":	"error-report.v1",
+	"what_failed":	"IR validation",
+	"component_or_net":	"",
+	"why":	"Connection references unknown role 'R99'. Add it to components[] or fix the connection.",
+	"how_to_fix":	"Fix the schematic IR fields listed in the error, then regenerate.",
+	"partial_artifacts":	false
+}

@@ -1,0 +1,35 @@
+﻿vec_test exit=0
+Vec test PASSED
+---
+intern_test exit=0
+Interner test PASSED
+---
+design_test exit=0
+Design test PASSED
+---
+component_model_test exit=0
+Component model test PASSED
+---
+model_test exit=0
+Model registry test PASSED
+---
+dfm_test exit=0
+DFM test PASSED
+---
+provider_test exit=0
+Part provider test PASSED
+---
+mna_test exit=0
+PASS: dynamic matrix
+PASS: resistor divider
+Diode operating point:
+    Vout = 0.574191498 V
+    I    = 0.004425809 A
+    iterations = 22
+PASS: nonlinear diode
+PASS: multiple nonlinear devices
+
+================================
+MNA TEST SUITE: PASS
+================================
+---

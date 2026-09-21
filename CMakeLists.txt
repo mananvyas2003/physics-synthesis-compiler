@@ -33,6 +33,31 @@ set(SYNTH_INCLUDE_DIRS
   ${CMAKE_CURRENT_SOURCE_DIR}/verify
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cJSON
+  ${CMAKE_CURRENT_SOURCE_DIR}/vendor_next/src
+)
+
+# ============================================================
+# Teammate engineering core (electronics_vendor_v2_next)
+# ============================================================
+add_library(electronics_core STATIC
+  vendor_next/src/vec.c
+  vendor_next/src/intern.c
+  vendor_next/src/range.c
+  vendor_next/src/constraint.c
+  vendor_next/src/component.c
+  vendor_next/src/net.c
+  vendor_next/src/design.c
+  vendor_next/src/component_model.c
+  vendor_next/src/model_registry.c
+  vendor_next/src/diagnostic.c
+  vendor_next/src/dfm.c
+  vendor_next/src/part_provider.c
+  vendor_next/src/mna.c
+  vendor_next/src/e_series.c
+  vendor_next/src/kicad_generic_provider.c
+)
+target_include_directories(electronics_core PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/vendor_next/src
 )
 
 add_library(sqlite3 STATIC third_party/sqlite3/sqlite3.c)
@@ -48,8 +73,13 @@ add_library(synth_core STATIC
   db.c
   catalogue.c
   jlcparts_import.c
-  DFM.c
+  dfm_compose.c
+  mfg_dfm.c
+  vendor_bridge.c
   compiler.c
+  unit_parse.c
+  diag_error.c
+  part_lib.c
   physics2_isa.c
   physics2_interpreter.c
   physics2_types.c
@@ -75,7 +105,7 @@ add_library(synth_core STATIC
   cli/cmd_generate.c
 )
 target_include_directories(synth_core PUBLIC ${SYNTH_INCLUDE_DIRS})
-target_link_libraries(synth_core PUBLIC sqlite3 cjson)
+target_link_libraries(synth_core PUBLIC sqlite3 cjson electronics_core)
 
 if(MINGW)
   target_link_libraries(synth_core PUBLIC pthread)
@@ -104,5 +134,22 @@ add_test(NAME golden COMMAND golden_runner
 set_tests_properties(golden PROPERTIES
   ENVIRONMENT "SYNTH_FIXTURE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
 )
+
+function(add_vendor_test TEST_NAME TEST_SOURCE)
+  add_executable(${TEST_NAME} ${TEST_SOURCE})
+  target_link_libraries(${TEST_NAME} PRIVATE electronics_core)
+  target_include_directories(${TEST_NAME} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor_next/src)
+  add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+endfunction()
+
+add_vendor_test(vec_test vendor_next/tests/vec_test.c)
+add_vendor_test(intern_test vendor_next/tests/intern_test.c)
+add_vendor_test(design_test vendor_next/tests/design_test.c)
+add_vendor_test(component_model_test vendor_next/tests/component_model_test.c)
+add_vendor_test(model_test vendor_next/tests/model_test.c)
+add_vendor_test(dfm_test vendor_next/tests/dfm_test.c)
+add_vendor_test(provider_test vendor_next/tests/provider_test.c)
+add_vendor_test(mna_test vendor_next/tests/mna_test.c)
 
 install(TARGETS synth RUNTIME DESTINATION bin)

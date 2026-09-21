@@ -14,7 +14,7 @@ function ensureEmpty() {
     empty.className = "empty";
     empty.id = "empty";
     empty.innerHTML =
-      "<h1>Describe a circuit.</h1><p>Gemini drafts schematic IR; your compiler binds, verifies, and emits KiCad.</p>";
+      "<h1>Describe a circuit.</h1><p>Examples: “5V red LED with series resistor”, “RC low-pass 10k/100nF”, “RL filter 10k/10µH”, “3.3V LDO from 5V”, “NPN switch driving an LED”.</p>";
     chat.appendChild(empty);
   }
 }
@@ -48,6 +48,7 @@ function addBubble(role, text, opts = {}) {
       "verification.v1.json": "Verify",
       "prompt_schematic.json": "IR JSON",
       "composed_schematic.json": "Composed JSON",
+      "mfg-dfm.v1.json": "DFM Report",
     };
     Object.entries(opts.artifacts).forEach(([name, href]) => {
       const a = document.createElement("a");
@@ -71,6 +72,13 @@ function addBubble(role, text, opts = {}) {
     el.appendChild(row);
   }
 
+  if (opts.inspector) {
+    const box = document.createElement("pre");
+    box.className = "inspector";
+    box.textContent = opts.inspector;
+    el.appendChild(box);
+  }
+
   if (opts.meta) {
     const meta = document.createElement("p");
     meta.className = "meta";
@@ -84,6 +92,70 @@ function addBubble(role, text, opts = {}) {
 }
 
 ensureEmpty();
+
+const catStatus = document.getElementById("cat-status");
+const partsFile = document.getElementById("parts-file");
+const dfmFile = document.getElementById("dfm-file");
+
+async function refreshCatalogue() {
+  try {
+    const res = await fetch("/api/catalogue");
+    const data = await res.json();
+    catStatus.textContent = `${data.parts ?? "?"} DEMO/user parts · DFM “${
+      data.dfm_name || "standard"
+    }”`;
+  } catch (err) {
+    catStatus.textContent = "Catalogue unavailable";
+  }
+}
+
+partsFile?.addEventListener("change", async () => {
+  const file = partsFile.files?.[0];
+  if (!file) return;
+  setStatus("Importing parts…");
+  try {
+    const buf = await file.arrayBuffer();
+    const res = await fetch("/api/upload/parts", {
+      method: "POST",
+      headers: { "Content-Type": "text/csv" },
+      body: buf,
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "import failed");
+    setStatus("Parts imported");
+    await refreshCatalogue();
+  } catch (err) {
+    setStatus("Parts import failed");
+    addBubble("bot", String(err), { error: true });
+  } finally {
+    partsFile.value = "";
+  }
+});
+
+dfmFile?.addEventListener("change", async () => {
+  const file = dfmFile.files?.[0];
+  if (!file) return;
+  setStatus("Updating DFM…");
+  try {
+    const text = await file.text();
+    const res = await fetch("/api/upload/dfm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: text,
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "DFM upload failed");
+    setStatus("DFM profile saved");
+    await refreshCatalogue();
+  } catch (err) {
+    setStatus("DFM upload failed");
+    addBubble("bot", String(err), { error: true });
+  } finally {
+    dfmFile.value = "";
+  }
+});
+
+refreshCatalogue();
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -119,10 +191,30 @@ form.addEventListener("submit", async (e) => {
       data.run_id ? `Run: ${data.run_id}` : null,
     ].filter(Boolean);
 
+    let inspector = "";
+    try {
+      const snapText =
+        data.artifact_contents &&
+        data.artifact_contents["design-snapshot.v1.json"];
+      if (snapText) {
+        const snap = JSON.parse(snapText);
+        const comps = (snap.components || [])
+          .map((c) => `${c.role}  ${c.mpn}  val=${c.value}`)
+          .join("\n");
+        const nets = (snap.nets || [])
+          .map((n) => `${n.name}: ${(n.pins || []).join(", ")}`)
+          .join("\n");
+        inspector = `Components\n${comps}\n\nNets\n${nets}`;
+      }
+    } catch (_) {
+      /* ignore */
+    }
+
     addBubble("bot", lines.join("\n"), {
       artifacts: data.artifacts,
       artifact_contents: data.artifact_contents,
-      meta: "Open Schematic in KiCad, or download the other artifacts.",
+      inspector,
+      meta: "Inspect connectivity below, or open Schematic in KiCad.",
     });
     setStatus("Ready");
   } catch (err) {

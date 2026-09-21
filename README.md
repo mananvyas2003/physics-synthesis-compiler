@@ -1,6 +1,29 @@
 # Physics Synthesis Compiler
 
-C11 engineering synthesis / Physics2 runtime. External surface: CLI + JSON fixtures.
+C11 engineering synthesis / Physics2 runtime + teammate engineering core
+([electronics_vendor_v2_next](https://github.com/Abheesht04/electronics_vendor_v2_next)).
+External surface: CLI + JSON fixtures + chat UI.
+
+**Phase 0 audit (2026-09-21):** full mathematical / architectural review — see [AUDIT_README.md](AUDIT_README.md) and [AUDIT_REPORT.md](AUDIT_REPORT.md).
+
+**Phase 1 (started):** Physics2 frozen as live MNA ([docs/math/MNA_CONTRACT.md](docs/math/MNA_CONTRACT.md)); IC/transistor verify fail-closed; Gemini must not invent MPNs (`parts: []`); vendor `mna_validate` voltage residual units fixed.
+
+## Architecture
+
+```
+prompt / design JSON
+  → schematic-ir (Gemini or fixtures)
+  → bind + Physics2 verify
+  → vendor Design IR + DFM (electronics_core)
+  → KiCad / BOM / netlist emit
+```
+
+Vendor sources live in `vendor_next/` (`electronics_core` library): vec, intern,
+range, constraint, component, net, design, models, diagnostic, dfm, part_provider,
+mna, e_series, kicad_generic_provider. Bridge: `vendor_bridge.c`.
+
+Block-composition DFM (port compatibility) is `dfm_compose.*` (renamed from
+`DFM.*` so it does not collide with vendor `dfm.h` on Windows).
 
 ## Build
 
@@ -11,6 +34,8 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+`ctest` runs golden_runner plus vendor unit tests (`dfm_test`, `mna_test`, …).
 
 Sanitizers (GCC/Clang):
 
@@ -30,6 +55,7 @@ CSV import always takes the CSV path as a CLI argument — never a hardcoded mac
 ./build/synth generate --prompt fixtures/prompts/001.txt -o out/
 ./build/synth generate --prompt-text "10k resistor divider" -o out/
 ./build/synth generate --compose-gate4 -o out/
+./build/synth generate fixtures/seed/resistor_divider.json -o out/ --dfm-profile fixtures/dfm/standard.json --catalogue user_data/catalogue.db
 export SYNTH_BIN=$PWD/build/synth
 ./scripts/run_kicad_erc.sh out_erc   # requires kicad-cli
 ```
@@ -44,6 +70,29 @@ python web/server.py
 ```
 
 Put `GEMINI_API_KEY` in a repo-root `.env` file. See [docs/WEB_UI.md](docs/WEB_UI.md).
+Library panel: upload JLCPCB parts CSV + DFM JSON; defaults use project DEMO parts
+and vendor `standard` manufacturing profile.
+
+## Ponytail (Cursor agent mode)
+
+Lazy-senior coding rules for Cursor in this repo (`ponytail/` checkout + project hooks).
+
+Already installed for this workspace:
+
+- `.cursor/hooks.json` — injects Ponytail on `sessionStart` and handles level switches
+- `.cursor/skills/` — `ponytail`, `ponytail-review`, `ponytail-audit`, `ponytail-debt`, `ponytail-gain`, `ponytail-help`
+
+**Start a new Cursor chat** after clone/move so hooks reload. Then:
+
+- Type `/ponytail` as a plain message to see the active level
+- `/ponytail lite` · `/ponytail full` (default) · `/ponytail ultra` · `/ponytail off`
+- Or say `stop ponytail` / `normal mode`
+
+Re-install after moving the checkout:
+
+```bash
+node ponytail/scripts/cursor-hooks.js install --project
+```
 
 ## Layout
 

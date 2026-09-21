@@ -1,0 +1,35 @@
+{
+  "schema": "schematic-ir.v1",
+  "name": "ldo_3v3",
+  "description": "Simple LDO regulator 5V to 3.3V with output cap",
+  "category": "Power",
+  "parts": [
+    {
+      "mpn": "DEMO-LDO-3V3-SOT23",
+      "type": "regulator",
+      "value": 3.3,
+      "package": "SOT-23",
+      "v_rating": 16.0,
+      "i_rating": 0.3
+    },
+    {
+      "mpn": "DEMO-100N-0603-A",
+      "type": "capacitor",
+      "value": 1e-7,
+      "package": "0603",
+      "v_rating": 50.0
+    }
+  ],
+  "components": [
+    { "role": "U1", "part_type": "regulator", "quantity": 1, "target_value": 3.3, "package": "SOT-23" },
+    { "role": "C1", "part_type": "capacitor", "quantity": 1, "target_value": 1e-7, "package": "0603" }
+  ],
+  "nodes": ["VIN", "3V3", "GND"],
+  "connections": [
+    { "role": "U1", "pin": "VIN", "node": "VIN" },
+    { "role": "U1", "pin": "VOUT", "node": "3V3" },
+    { "role": "U1", "pin": "GND", "node": "GND" },
+    { "role": "C1", "pin": "1", "node": "3V3" },
+    { "role": "C1", "pin": "2", "node": "GND" }
+  ]
+}

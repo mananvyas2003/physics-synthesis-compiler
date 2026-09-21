@@ -1,4 +1,4 @@
-#include "DFM.h"
+#include "dfm_compose.h"
 
 #include <stdlib.h>
 #include <string.h>

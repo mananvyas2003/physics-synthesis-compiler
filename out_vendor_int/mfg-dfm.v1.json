@@ -1,0 +1,11 @@
+{
+	"schema":	"mfg-dfm.v1",
+	"engine":	"electronics_vendor_v2_next",
+	"profile":	"standard",
+	"layer_count":	2,
+	"max_component_height_mm":	1.6,
+	"errors":	[],
+	"passed":	true,
+	"error_count":	0,
+	"summary":	"vendor dfm ok profile=standard"
+}

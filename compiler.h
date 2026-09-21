@@ -14,11 +14,17 @@ typedef struct {
   char role[64];
   DBPart part;
 
+  /* Up to PART_LIB_MAX_PINS terminals; pin1/node1 kept as pins[0]/nodes[0]. */
+  int pin_count;
+  char pins[8][32];
+  char nodes[8][64];
+
   char pin1[32];
   char pin2[32];
-
+  char pin3[32];
   char node1[64];
   char node2[64];
+  char node3[64];
 
   /* M4 scored binding metadata */
   char rationale[256];

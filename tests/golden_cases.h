@@ -25,6 +25,11 @@ int golden_g13_schematic_corpus(FILE *out, const char *fixture_root);
 int golden_g14_prompt_generate(FILE *out, const char *fixture_root);
 int golden_g15_compose_expand_sch(FILE *out, const char *fixture_root);
 int golden_g16_structural_erc(FILE *out, const char *fixture_root);
+int golden_g17_led_series(FILE *out, const char *fixture_root);
+int golden_g18_rc_low_pass(FILE *out, const char *fixture_root);
+int golden_g19_invalid_role(FILE *out, const char *fixture_root);
+int golden_g20_rl_low_pass(FILE *out, const char *fixture_root);
+int golden_g21_ldo_3v3(FILE *out, const char *fixture_root);
 
 #ifdef __cplusplus
 }

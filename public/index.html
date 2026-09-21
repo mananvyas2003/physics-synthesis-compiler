@@ -27,6 +27,22 @@
       </header>
 
       <main class="stage">
+        <aside class="uploads" aria-label="Parts and DFM uploads">
+          <h2>Library</h2>
+          <p class="upload-note" id="cat-status">Loading catalogue…</p>
+          <label class="upload-field">
+            <span>Parts CSV (JLCPCB)</span>
+            <input type="file" id="parts-file" accept=".csv,text/csv" />
+          </label>
+          <label class="upload-field">
+            <span>DFM profile JSON</span>
+            <input type="file" id="dfm-file" accept=".json,application/json" />
+          </label>
+          <p class="upload-hint">
+            Default: project DEMO parts + <code>standard</code> fab profile
+            (vendor dfm.c). Uploads merge into the shared catalogue.
+          </p>
+        </aside>
         <section class="chat" id="chat" aria-live="polite"></section>
       </main>
 

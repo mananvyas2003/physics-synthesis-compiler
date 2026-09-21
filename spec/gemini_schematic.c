@@ -196,15 +196,24 @@ static const char *SYSTEM_RULES =
     "Reply with ONLY one JSON object matching schematic-ir.v1. No markdown. "
     "Required fields: name, description, category, parts, components, nodes, "
     "connections. "
-    "Use only resistor part_type for now. Include at least two DEMO catalogue "
-    "parts with mpn/type/value/package and optional v_rating/power_rating_w. "
-    "components need role, part_type, quantity, target_value, package. "
+    "Supported part_type values: resistor, capacitor, inductor, diode, led "
+    "(prefer these; avoid transistor/regulator until DC models exist). "
+    "CRITICAL: set parts to [] (empty). Do NOT invent MPNs or catalogue rows. "
+    "Part binding is owned by the deterministic compiler/catalogue DB. "
+    "components need role, part_type, quantity, target_value, package only. "
     "CRITICAL FORMAT RULES: "
-    "1. 'value' in parts and 'target_value' in components MUST be numeric numbers in ohms (e.g. 10000 or 4700, NOT strings like \"10k\"). "
-    "2. 'quantity' in components MUST be a numeric integer (e.g. 1). "
-    "connections are {role,pin,node} with string pins \"1\" and \"2\". "
-    "Prefer nets VIN,VOUT,GND for a divider, or VBUS,3V3,GND for power chains. "
-    "Keep designs small (2-6 resistors).";
+    "1. 'target_value' MUST be numeric SI (ohms, farads, or volts for LED Vf). "
+    "Prefer numbers (10000, 1e-7, 2.0). Engineering strings like \"1k\" ok. "
+    "2. 'quantity' MUST be a numeric integer (e.g. 1). "
+    "3. connections are {role,pin,node}. Pins are \"1\" and \"2\" for passives; "
+    "for LED/diode you may use \"A\"/\"K\" (anode/cathode) or \"1\"/\"2\". "
+    "4. Always include GND and a power net (VIN, VBUS, VCC, 3V3, or 5V). "
+    "Circuit recipes (topology only — no MPNs): "
+    "- LED indicator: series resistor + led (Vf~2.0), nets e.g. 5V/VIN, LED_A, "
+    "GND. "
+    "- RC low-pass: resistor + capacitor, nets VIN, VOUT, GND. "
+    "- Divider: two resistors, nets VIN, VOUT, GND. "
+    "Keep designs small (2-6 components).";
 
 static char *extract_json_object(const char *text) {
   const char *start;
@@ -381,11 +390,15 @@ static int one_gemini_attempt(const char *prompt_text, const char *feedback,
     if (feedback && feedback[0])
       snprintf(user_buf, sizeof(user_buf),
                "User prompt:\n%s\n\nPrevious IR was invalid:\n%s\n"
-               "Return corrected schematic-ir.v1 JSON only. Remember: 'value' and 'target_value' must be numeric numbers in ohms (e.g. 10000, NOT \"10k\").",
+               "Return corrected schematic-ir.v1 JSON only. Supported types: "
+               "resistor, capacitor, diode, led. Values are SI numbers "
+               "(ohms/farads/Vf). Pins 1/2 or A/K. Include GND and a power net.",
                prompt_text, feedback);
     else
       snprintf(user_buf, sizeof(user_buf),
-               "User prompt:\n%s\n\nReturn schematic-ir.v1 JSON only. Remember: 'value' and 'target_value' must be numeric numbers in ohms (e.g. 10000, NOT \"10k\").",
+               "User prompt:\n%s\n\nReturn schematic-ir.v1 JSON only. Supported "
+               "types: resistor, capacitor, diode, led. Values are SI numbers. "
+               "Pins 1/2 or A/K. Include GND and a power net.",
                prompt_text);
     esc_user = json_escape(user_buf);
   }

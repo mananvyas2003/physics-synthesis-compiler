@@ -929,3 +929,70 @@ void DB_PrintAllParts(DB *db) {
   printf("====================================================================="
          "===========\n\n");
 }
+
+int DB_CountParts(DB *db) {
+  sqlite3_stmt *stmt = NULL;
+  int count = -1;
+
+  if (!db || !db->handle)
+    return -1;
+  if (sqlite3_prepare_v2(db->handle, "SELECT COUNT(*) FROM Parts;", -1, &stmt,
+                         NULL) != SQLITE_OK)
+    return -1;
+  if (sqlite3_step(stmt) == SQLITE_ROW)
+    count = sqlite3_column_int(stmt, 0);
+  sqlite3_finalize(stmt);
+  return count;
+}
+
+int DB_MergePartsFrom(DB *dest, const char *src_path) {
+  DB *src;
+  sqlite3_stmt *stmt = NULL;
+  int merged = 0;
+
+  if (!dest || !src_path || !src_path[0])
+    return -1;
+
+  src = DB_open(src_path);
+  if (!src)
+    return -1;
+
+  if (sqlite3_prepare_v2(src->handle,
+                         "SELECT mpn, type, value, package, v_rating, "
+                         "i_rating, esr_ohms, power_rating_w, "
+                         "tolerance_class FROM Parts;",
+                         -1, &stmt, NULL) != SQLITE_OK) {
+    DB_close(src);
+    return -1;
+  }
+
+  DB_BeginTransaction(dest);
+  while (sqlite3_step(stmt) == SQLITE_ROW) {
+    DBPart part;
+    int64_t id = 0;
+    const unsigned char *mpn;
+    const unsigned char *pkg;
+
+    memset(&part, 0, sizeof(part));
+    mpn = sqlite3_column_text(stmt, 0);
+    pkg = sqlite3_column_text(stmt, 3);
+    if (!mpn)
+      continue;
+    strncpy(part.mpn, (const char *)mpn, sizeof(part.mpn) - 1);
+    part.type = (PartTypes)sqlite3_column_int(stmt, 1);
+    part.value = sqlite3_column_double(stmt, 2);
+    if (pkg)
+      strncpy(part.package, (const char *)pkg, sizeof(part.package) - 1);
+    part.v_rating = sqlite3_column_double(stmt, 4);
+    part.i_rating = sqlite3_column_double(stmt, 5);
+    part.esr_ohms = sqlite3_column_double(stmt, 6);
+    part.power_rating_w = sqlite3_column_double(stmt, 7);
+    part.tolerance_class = (ToleranceClass)sqlite3_column_int(stmt, 8);
+    if (DB_InsertPartFull(dest, &part, &id) == DB_OK)
+      merged++;
+  }
+  sqlite3_finalize(stmt);
+  DB_CommitTransaction(dest);
+  DB_close(src);
+  return merged;
+}
