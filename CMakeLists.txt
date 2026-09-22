@@ -59,6 +59,10 @@ add_library(electronics_core STATIC
 target_include_directories(electronics_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/vendor_next/src
 )
+# mna.c uses exp(); Linux linkers need -lm on the final test executables.
+if(NOT MSVC)
+  target_link_libraries(electronics_core PUBLIC m)
+endif()
 
 add_library(sqlite3 STATIC third_party/sqlite3/sqlite3.c)
 target_include_directories(sqlite3 PUBLIC third_party/sqlite3)
