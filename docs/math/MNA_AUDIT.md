@@ -320,7 +320,7 @@ Correct sequence:
 | V | yes | yes | CORRECT | no | N/A | linear |
 | I | yes | no | CORRECT | no | N/A | linear |
 | VCVS/VCCS/CCVS/CCCS | yes | no | PARTIAL | no | N/A | linear |
-| Diode | stub | yes | vendor CORRECT | no | no | vendor Newton |
+| Diode | yes Newton | yes | CORRECT (g22+mna) | no | no | Newton |
 | BJT/MOS | stub | no | UNDEFINED | no | no | UNDEFINED |
 
 ---

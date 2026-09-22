@@ -26,3 +26,7 @@ gemini_resp.json
 
 vendor_next/build-gcc/
 vendor_next/build/
+
+__pycache__/
+*.pyc
+
