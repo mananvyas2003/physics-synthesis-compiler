@@ -82,6 +82,22 @@ static void sleep_ms(unsigned ms) {
 #endif
 }
 
+static int response_is_auth_error(const char *resp) {
+  if (!resp)
+    return 0;
+  if (strstr(resp, "API_KEY_INVALID") || strstr(resp, "API key not valid") ||
+      strstr(resp, "INVALID_API_KEY") || strstr(resp, "Permission denied") ||
+      strstr(resp, "\"status\": \"UNAUTHENTICATED\"") ||
+      strstr(resp, "\"status\":\"UNAUTHENTICATED\""))
+    return 1;
+  /* 400 with API key wording is permanent — do not retry models. */
+  if ((strstr(resp, "\"code\": 400") || strstr(resp, "\"code\":400")) &&
+      (strstr(resp, "API key") || strstr(resp, "api key") ||
+       strstr(resp, "API_KEY")))
+    return 1;
+  return 0;
+}
+
 static int response_is_retriable_model_error(const char *resp, int *is_404) {
   if (!resp)
     return 0;
@@ -446,7 +462,14 @@ static int one_gemini_attempt(const char *prompt_text, const char *feedback,
   /* Surface API errors. */
   if (strstr(resp, "\"error\"")) {
     int f404 = 0;
-    if (response_is_retriable_model_error(resp, &f404)) {
+    if (response_is_auth_error(resp)) {
+      snprintf(errbuf, errlen,
+               "Gemini API key rejected (invalid/expired). Put a valid "
+               "Google AI Studio key (starts with AIza) in GEMINI_API_KEY or "
+               "GEMINI_API_KEY.local. Detail: %.120s",
+               resp);
+      /* leave retriable_out = 0 */
+    } else if (response_is_retriable_model_error(resp, &f404)) {
       if (retriable_out)
         *retriable_out = 1;
       if (is_404_out)
@@ -537,13 +560,20 @@ int gemini_schematic_from_prompt(const char *prompt_text, const char *out_ir_pat
                            out_ir_path, err, sizeof(err), &is_retriable,
                            &is_404) != 0) {
       snprintf(feedback, sizeof(feedback), "%s", err);
+      /* Permanent auth / bad-key errors: stop immediately (Vercel 50s budget). */
+      if (strstr(err, "API key rejected") || strstr(err, "API_KEY_INVALID") ||
+          strstr(err, "API key not valid") ||
+          strstr(err, "GEMINI_API_KEY not set"))
+        break;
       if (is_retriable) {
         if (!is_404)
           sleep_ms(1000u * (unsigned)((attempt % 3) + 1));
         if (current_model_idx + 1 < total_candidates)
           current_model_idx++;
+        continue;
       }
-      continue;
+      /* Non-retriable API/network failure: do not spin 6× on the same error. */
+      break;
     }
 
     if (schematic_ir_load_and_validate(out_ir_path, meta) == 0)
@@ -555,8 +585,13 @@ int gemini_schematic_from_prompt(const char *prompt_text, const char *out_ir_pat
                                           : "invalid schematic-ir.v1");
   }
 
-  if (strstr(feedback, "overloaded") || strstr(feedback, "503") ||
-      strstr(feedback, "currently experiencing")) {
+  if (strstr(feedback, "API key rejected") ||
+      strstr(feedback, "API_KEY_INVALID") ||
+      strstr(feedback, "API key not valid")) {
+    snprintf(meta->clarifying_question, sizeof(meta->clarifying_question),
+             "%s", feedback);
+  } else if (strstr(feedback, "overloaded") || strstr(feedback, "503") ||
+             strstr(feedback, "currently experiencing")) {
     snprintf(meta->clarifying_question, sizeof(meta->clarifying_question),
              "Gemini models temporarily busy (503). Retry in a moment or set "
              "SYNTH_GEMINI_MODEL in GEMINI_API_KEY.local. Last: %.120s",

@@ -268,6 +268,16 @@ def save_dfm_profile(raw: bytes) -> dict:
     return {"ok": True, **catalogue_status()}
 
 
+def _gemini_key() -> str:
+    return (os.environ.get("GEMINI_API_KEY") or os.environ.get("SYNTH_LLM_API_KEY") or "").strip()
+
+
+def _gemini_key_looks_valid(key: str | None = None) -> bool:
+    """Google AI Studio keys are typically AIza… (length varies; require prefix)."""
+    k = (key if key is not None else _gemini_key()).strip()
+    return k.startswith("AIza") and len(k) >= 20
+
+
 def run_generate(prompt: str) -> dict:
     ensure_user_data()
     synth = find_synth()
@@ -282,7 +292,8 @@ def run_generate(prompt: str) -> dict:
     env = os.environ.copy()
     env["SYNTH_FIXTURE_ROOT"] = str(ROOT)
 
-    has_key = bool(env.get("GEMINI_API_KEY") or env.get("SYNTH_LLM_API_KEY"))
+    key = _gemini_key()
+    has_key = bool(key)
     cmd = [str(synth), "generate", "--prompt-text", prompt, "-o", str(out_dir)]
     if CATALOGUE_DB.is_file():
         cmd.extend(["--catalogue", str(CATALOGUE_DB)])
@@ -299,6 +310,20 @@ def run_generate(prompt: str) -> dict:
             ),
             "live": False,
         }
+    if not _gemini_key_looks_valid(key):
+        return {
+            "ok": False,
+            "run_id": run_id,
+            "live": False,
+            "error": (
+                "GEMINI_API_KEY does not look like a Google AI Studio key "
+                "(expected to start with AIza). Get a key at "
+                "https://aistudio.google.com/apikey and put it in "
+                "GEMINI_API_KEY / GEMINI_API_KEY.local (Vercel: Project -> "
+                "Environment Variables). A wrong key used to burn the 50s "
+                "Vercel generate timeout instead of failing fast."
+            ),
+        }
 
     timeout_sec = 50 if os.environ.get("VERCEL") else 300
     try:
@@ -311,10 +336,17 @@ def run_generate(prompt: str) -> dict:
             timeout=timeout_sec,
         )
     except subprocess.TimeoutExpired:
+        hint = ""
+        if os.environ.get("VERCEL"):
+            hint = (
+                " On Vercel the generate subprocess limit is 50s. "
+                "Check GEMINI_API_KEY is a valid AIza… key and that Gemini "
+                "is reachable; invalid keys / long retries used to hit this."
+            )
         return {
             "ok": False,
             "run_id": run_id,
-            "error": f"generate timed out after {timeout_sec}s",
+            "error": f"generate timed out after {timeout_sec}s.{hint}",
             "live": True,
         }
     except Exception as exc:  # noqa: BLE001
@@ -451,7 +483,7 @@ class Handler(SimpleHTTPRequestHandler):
         if resolved in ("/api/health", "/health") or (
             resolved in ("/api/index.py", "/api") and "health" in self.path
         ):
-            has_key = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("SYNTH_LLM_API_KEY"))
+            has_key = bool(_gemini_key())
             try:
                 synth_path = str(find_synth())
             except Exception:
@@ -461,6 +493,7 @@ class Handler(SimpleHTTPRequestHandler):
                 {
                     "status": "ok",
                     "has_key": has_key,
+                    "key_looks_valid": _gemini_key_looks_valid() if has_key else False,
                     "synth": synth_path,
                     "catalogue": catalogue_status(),
                 },
