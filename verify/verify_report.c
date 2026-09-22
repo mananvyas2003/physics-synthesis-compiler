@@ -1,16 +1,13 @@
 #include "verify_report.h"
 
 #include "cJSON.h"
+#include "diag_error.h"
 #include "physics2_interpreter.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 static int name_is(const char *a, const char *b) {
   return a && b && strcmp(a, b) == 0;
@@ -22,7 +19,8 @@ static int is_power_pos(const char *name) {
 }
 
 static int is_sense(const char *name) {
-  return name_is(name, "VOUT") || name_is(name, "3V3");
+  return name_is(name, "VOUT") || name_is(name, "SENSOR_VDD") ||
+         name_is(name, "ADC_SENSE") || name_is(name, "SENSE");
 }
 
 static double infer_vin(const CompiledSchematic *schematic) {
@@ -93,6 +91,8 @@ static int verify_led_analytical(const CompiledSchematic *schematic,
            "LED current: %.2f mA (expected 1.0-20.0 mA); Vf=%.2f V; series "
            "resistor power=%.2f mW; result=%s",
            i_led * 1000.0, vf, p_r * 1000.0, out->passed ? "PASS" : "FAIL");
+  out->measured_v = 0.0;
+  out->measured_node[0] = '\0';
 
   root = cJSON_CreateObject();
   cJSON_AddStringToObject(root, "schema", "verification.v1");
@@ -141,76 +141,9 @@ static int verify_led_analytical(const CompiledSchematic *schematic,
   return rc;
 }
 
-static int verify_rc_analytical(const CompiledSchematic *schematic,
-                                const char *report_path, VerifyResult *out) {
-  const CompiledComponent *r = NULL;
-  const CompiledComponent *c = NULL;
-  double fc;
-  int i;
-  cJSON *root;
-  char *printed = NULL;
-  FILE *fp;
-  int rc = 1;
-
-  for (i = 0; i < schematic->component_count; i++) {
-    if (schematic->components[i].part.type == PART_RESISTOR)
-      r = &schematic->components[i];
-    else if (schematic->components[i].part.type == PART_CAPACITOR)
-      c = &schematic->components[i];
-  }
-  if (!r || !c || r->part.value <= 0.0 || c->part.value <= 0.0) {
-    snprintf(out->summary, sizeof(out->summary),
-             "RC verify needs one resistor and one capacitor with positive "
-             "values");
-    return 1;
-  }
-
-  fc = 1.0 / (2.0 * M_PI * r->part.value * c->part.value);
-  out->rating_violations = 0;
-  if (c->part.v_rating > 0.0 && infer_vin(schematic) > c->part.v_rating)
-    out->rating_violations++;
-  out->passed = (out->rating_violations == 0 && isfinite(fc) && fc > 0.0) ? 1
-                                                                         : 0;
-  snprintf(out->summary, sizeof(out->summary),
-           "RC low-pass fc=%.3g Hz (R=%.3g C=%.3g); result=%s", fc,
-           r->part.value, c->part.value, out->passed ? "PASS" : "FAIL");
-
-  root = cJSON_CreateObject();
-  cJSON_AddStringToObject(root, "schema", "verification.v1");
-  cJSON_AddStringToObject(root, "analysis", "rc_cutoff_analytical");
-  cJSON_AddBoolToObject(root, "passed", out->passed ? 1 : 0);
-  cJSON_AddNumberToObject(root, "r_ohm", r->part.value);
-  cJSON_AddNumberToObject(root, "c_farad", c->part.value);
-  cJSON_AddNumberToObject(root, "cutoff_hz", fc);
-  cJSON_AddNumberToObject(root, "rating_violations", out->rating_violations);
-  cJSON_AddStringToObject(root, "summary", out->summary);
-  printed = cJSON_Print(root);
-  cJSON_Delete(root);
-  fp = fopen(report_path, "wb");
-  if (fp && printed) {
-    fputs(printed, fp);
-    fputc('\n', fp);
-    fclose(fp);
-    rc = out->passed ? 0 : 1;
-  }
-  free(printed);
-  return rc;
-}
-
 int verify_bound_schematic(const CompiledSchematic *schematic,
                            const char *report_path, VerifyResult *out) {
-  PhysicsProgram program;
-  PhysicsAccumulator *acc = NULL;
-  PhysicsExecutionContext ctx;
-  PhysicsPrimitive *prims = NULL;
-  NodeId *node_ids = NULL;
-  char **node_names = NULL;
-  int node_count = 0;
   int i;
-  int j;
-  NodeId gnd = PHYSICS2_NODE_NONE;
-  NodeId sense = PHYSICS2_NODE_NONE;
-  NodeId vin = PHYSICS2_NODE_NONE;
   double sense_v = 0.0;
   double vin_v = 5.0;
   double corner_low = 0.0;
@@ -223,11 +156,9 @@ int verify_bound_schematic(const CompiledSchematic *schematic,
   int has_dc = 0;
   int has_diode = 0;
   int has_cap = 0;
-  int has_res = 0;
   int has_ind = 0;
   int has_xstr = 0;
   int has_ic = 0;
-  int stamp_count = 0;
 
   if (!schematic || !report_path || !out)
     return 1;
@@ -240,8 +171,6 @@ int verify_bound_schematic(const CompiledSchematic *schematic,
       has_diode = 1;
     else if (t == PART_CAPACITOR)
       has_cap = 1;
-    else if (t == PART_RESISTOR)
-      has_res = 1;
     else if (t == PART_INDUCTOR)
       has_ind = 1;
     else if (t == PART_TRANSISTOR)
@@ -260,55 +189,12 @@ int verify_bound_schematic(const CompiledSchematic *schematic,
           led_like = 1;
       }
     }
+    /* LED-only: keep analytical until LED Shockley params exist.
+     * Mixed nets (e.g. caps + LED) must use Physics2 so C is not dropped. */
     if (led_like && !has_cap && !has_ind)
       return verify_led_analytical(schematic, report_path, out);
-    /* else: Physics2 Shockley path below */
-  }
-  if (has_cap && has_res && !has_xstr && !has_ic && !has_diode)
-    return verify_rc_analytical(schematic, report_path, out);
-  if (has_ind && has_res && !has_xstr) {
-    const CompiledComponent *rr = NULL;
-    const CompiledComponent *ll = NULL;
-    double fc;
-    cJSON *root2;
-    char *printed2 = NULL;
-    FILE *fp2;
-    for (i = 0; i < schematic->component_count; i++) {
-      if (schematic->components[i].part.type == PART_RESISTOR)
-        rr = &schematic->components[i];
-      else if (schematic->components[i].part.type == PART_INDUCTOR)
-        ll = &schematic->components[i];
-    }
-    if (!rr || !ll || rr->part.value <= 0.0 || ll->part.value <= 0.0) {
-      snprintf(out->summary, sizeof(out->summary), "RL verify missing R/L");
-      return 1;
-    }
-    fc = rr->part.value / (2.0 * M_PI * ll->part.value);
-    out->passed = isfinite(fc) && fc > 0.0 ? 1 : 0;
-    snprintf(out->summary, sizeof(out->summary),
-             "RL low-pass fc=%.3g Hz (R=%.3g L=%.3g); result=%s", fc,
-             rr->part.value, ll->part.value, out->passed ? "PASS" : "FAIL");
-    root2 = cJSON_CreateObject();
-    cJSON_AddStringToObject(root2, "schema", "verification.v1");
-    cJSON_AddStringToObject(root2, "analysis", "rl_cutoff_analytical");
-    cJSON_AddBoolToObject(root2, "passed", out->passed ? 1 : 0);
-    cJSON_AddNumberToObject(root2, "cutoff_hz", fc);
-    cJSON_AddStringToObject(root2, "summary", out->summary);
-    printed2 = cJSON_Print(root2);
-    cJSON_Delete(root2);
-    fp2 = fopen(report_path, "wb");
-    if (fp2 && printed2) {
-      fputs(printed2, fp2);
-      fputc('\n', fp2);
-      fclose(fp2);
-      free(printed2);
-      return out->passed ? 0 : 1;
-    }
-    free(printed2);
-    return 1;
   }
   if (has_xstr || has_ic) {
-    /* Phase 1: fail-closed — no fake "structural pass" without DC bias. */
     out->passed = 0;
     snprintf(out->summary, sizeof(out->summary),
              "unsupported: %s (no DC bias model yet)",
@@ -332,173 +218,303 @@ int verify_bound_schematic(const CompiledSchematic *schematic,
     return 1;
   }
 
-  physics2_program_init(&program);
+  /* Authoritative path: CompiledSchematic → PhysDesign → Physics2. */
+  {
+    CompilerPhysDesign phys;
+    CompiledPhysicsProgram compiled;
+    PhysicsAccumulator *acc = NULL;
+    PhysicsExecutionContext ctx;
+    NodeId gnd = PHYSICS2_NODE_NONE;
+    NodeId sense = PHYSICS2_NODE_NONE;
+    NodeId vin = PHYSICS2_NODE_NONE;
+    size_t pi;
+    size_t ni;
+    int phys_caps = 0;
+    int phys_inds = 0;
+    int phys_res = 0;
+    int phys_diodes = 0;
+    cJSON *nodes_js;
 
-  prims = calloc((size_t)schematic->component_count + 1u, sizeof(*prims));
-  node_names = calloc(64, sizeof(*node_names));
-  node_ids = calloc(64, sizeof(*node_ids));
-  if (!prims || !node_names || !node_ids)
-    goto done;
+    vin_v = infer_vin(schematic);
+    memset(&compiled, 0, sizeof(compiled));
+    compiler_physics_design_init(&phys);
 
-  for (i = 0; i < schematic->component_count; i++) {
-    const char *names[2] = {schematic->components[i].node1,
-                            schematic->components[i].node2};
-    int k;
-    for (k = 0; k < 2; k++) {
-      int found = 0;
-      for (j = 0; j < node_count; j++) {
-        if (strcmp(node_names[j], names[k]) == 0) {
-          found = 1;
-          break;
+    if (!compiler_schematic_to_phys_design(schematic, vin_v, &phys)) {
+      snprintf(out->summary, sizeof(out->summary), "phys_design: %s",
+               diag_last_error()[0] ? diag_last_error() : "lower failed");
+      out->passed = 0;
+      root = cJSON_CreateObject();
+      cJSON_AddStringToObject(root, "schema", "verification.v1");
+      cJSON_AddStringToObject(root, "analysis", "physics_unsupported");
+      cJSON_AddBoolToObject(root, "passed", 0);
+      cJSON_AddStringToObject(root, "summary", out->summary);
+      printed = cJSON_Print(root);
+      cJSON_Delete(root);
+      fp = fopen(report_path, "wb");
+      if (fp && printed) {
+        fputs(printed, fp);
+        fputc('\n', fp);
+        fclose(fp);
+      }
+      free(printed);
+      compiler_physics_design_free(&phys);
+      return 1;
+    }
+
+    if (!compiler_lower_to_physics2(&phys, &compiled)) {
+      snprintf(out->summary, sizeof(out->summary),
+               "Physics2 lowering failed (component loss or init error)");
+      out->passed = 0;
+      compiler_physics_design_free(&phys);
+      root = cJSON_CreateObject();
+      cJSON_AddStringToObject(root, "schema", "verification.v1");
+      cJSON_AddStringToObject(root, "analysis", "physics_lower_failed");
+      cJSON_AddBoolToObject(root, "passed", 0);
+      cJSON_AddStringToObject(root, "summary", out->summary);
+      printed = cJSON_Print(root);
+      cJSON_Delete(root);
+      fp = fopen(report_path, "wb");
+      if (fp && printed) {
+        fputs(printed, fp);
+        fputc('\n', fp);
+        fclose(fp);
+      }
+      free(printed);
+      return 1;
+    }
+
+    for (pi = 0; pi < phys.count; pi++) {
+      if (phys.elements[pi].kind == COMPILER_PHYS_CAPACITOR)
+        phys_caps++;
+      else if (phys.elements[pi].kind == COMPILER_PHYS_INDUCTOR)
+        phys_inds++;
+      else if (phys.elements[pi].kind == COMPILER_PHYS_RESISTOR)
+        phys_res++;
+      else if (phys.elements[pi].kind == COMPILER_PHYS_DIODE)
+        phys_diodes++;
+    }
+
+    /* Integrity: every bound R/C/L/diode must appear in Physical IR / program. */
+    {
+      int bound_rcld = 0;
+      for (i = 0; i < schematic->component_count; i++) {
+        PartTypes t = schematic->components[i].part.type;
+        if (t == PART_RESISTOR || t == PART_CAPACITOR || t == PART_INDUCTOR ||
+            t == PART_DIODE)
+          bound_rcld++;
+      }
+      if ((int)compiled.program.instruction_count < bound_rcld) {
+        snprintf(out->summary, sizeof(out->summary),
+                 "PHYSICS_COMPONENT_LOSS: bound=%d physics2_instr=%zu",
+                 bound_rcld, compiled.program.instruction_count);
+        out->passed = 0;
+        compiler_free_physics_program(&compiled);
+        compiler_physics_design_free(&phys);
+        root = cJSON_CreateObject();
+        cJSON_AddStringToObject(root, "schema", "verification.v1");
+        cJSON_AddStringToObject(root, "analysis", "physics_component_loss");
+        cJSON_AddBoolToObject(root, "passed", 0);
+        cJSON_AddStringToObject(root, "summary", out->summary);
+        printed = cJSON_Print(root);
+        cJSON_Delete(root);
+        fp = fopen(report_path, "wb");
+        if (fp && printed) {
+          fputs(printed, fp);
+          fputc('\n', fp);
+          fclose(fp);
         }
-      }
-      if (!found && node_count < 64) {
-        node_names[node_count] = (char *)names[k];
-        node_ids[node_count] = physics2_program_new_node(&program);
-        if (name_is(names[k], "GND"))
-          gnd = node_ids[node_count];
-        if (is_sense(names[k]))
-          sense = node_ids[node_count];
-        if (is_power_pos(names[k]))
-          vin = node_ids[node_count];
-        node_count++;
+        free(printed);
+        return 1;
       }
     }
-  }
 
-  if (gnd == PHYSICS2_NODE_NONE && node_count > 0)
-    gnd = node_ids[0];
-
-  vin_v = infer_vin(schematic);
-  if (vin != PHYSICS2_NODE_NONE && gnd != PHYSICS2_NODE_NONE) {
-    NodeId terminals[2];
-    if (!physics2_primitive_init_vsource(&prims[schematic->component_count],
-                                         "VSRC", vin_v, 0.0))
-      goto done;
-    terminals[0] = vin;
-    terminals[1] = gnd;
-    if (physics2_program_add_primitive(&program,
-                                       &prims[schematic->component_count],
-                                       terminals, 2) == PHYSICS_PRIMITIVE_NONE)
-      goto done;
-    has_dc = 1;
-  }
-
-  for (i = 0; i < schematic->component_count; i++) {
-    NodeId terminals[2] = {PHYSICS2_NODE_NONE, PHYSICS2_NODE_NONE};
-    PartTypes t = schematic->components[i].part.type;
-    for (j = 0; j < node_count; j++) {
-      if (strcmp(node_names[j], schematic->components[i].node1) == 0)
-        terminals[0] = node_ids[j];
-      if (strcmp(node_names[j], schematic->components[i].node2) == 0)
-        terminals[1] = node_ids[j];
+    gnd = compiler_physics_find_node(&compiled, "GND");
+    sense = compiler_physics_find_node(&compiled, "VOUT");
+    if (sense == PHYSICS2_NODE_NONE)
+      sense = compiler_physics_find_node(&compiled, "SENSOR_VDD");
+    if (sense == PHYSICS2_NODE_NONE)
+      sense = compiler_physics_find_node(&compiled, "ADC_SENSE");
+    for (ni = 0; ni < compiled.node_count; ni++) {
+      if (is_power_pos(compiled.nodes[ni].name))
+        vin = compiled.nodes[ni].id;
+      if (sense == PHYSICS2_NODE_NONE && is_sense(compiled.nodes[ni].name))
+        sense = compiled.nodes[ni].id;
     }
-    if (t == PART_RESISTOR) {
-      if (!physics2_primitive_init_resistor(
-              &prims[stamp_count], schematic->components[i].role,
-              schematic->components[i].part.value, 0.0))
-        goto done;
-    } else if (t == PART_DIODE) {
-      double isat = 1.0e-12;
-      double vt = (1.380649e-23 * 300.0) / 1.602176634e-19;
-      double pv = schematic->components[i].part.value;
-      if (pv > 0.0 && pv < 1.0e-6)
-        isat = pv;
-      if (!physics2_primitive_init_diode(&prims[stamp_count],
-                                         schematic->components[i].role, isat,
-                                         1.0, vt, 0.0))
-        goto done;
-    } else {
-      continue; /* DC: omit C (open); L not in this path */
-    }
-    if (physics2_program_add_primitive(&program, &prims[stamp_count], terminals,
-                                       2) == PHYSICS_PRIMITIVE_NONE)
-      goto done;
-    stamp_count++;
-  }
+    if (gnd == PHYSICS2_NODE_NONE && compiled.node_count > 0)
+      gnd = compiled.nodes[0].id;
 
-  if (has_dc) {
-    acc = physics2_accumulator_create(program.next_node + program.branch_count);
-    if (!acc)
-      goto done;
-    if (!physics2_context_init(&ctx, &program, acc, 1e-3))
-      goto done;
-    if (!physics2_context_step(&ctx, gnd)) {
-      physics2_context_free(&ctx);
-      goto done;
-    }
-    if (sense != PHYSICS2_NODE_NONE)
-      sense_v = ctx.solution[sense];
-    else if (vin != PHYSICS2_NODE_NONE)
-      sense_v = ctx.solution[vin];
-    corner_low = sense_v * 0.99;
-    corner_high = sense_v * 1.01;
-    physics2_context_free(&ctx);
-  }
-
-  if (schematic->component_count > 0 &&
-      schematic->components[0].part.type == PART_RESISTOR)
-    ac_mag = 1.0 / schematic->components[0].part.value;
-
-  out->rating_violations = 0;
-  for (i = 0; i < schematic->component_count; i++) {
-    const CompiledComponent *c = &schematic->components[i];
-    double drop = fabs(sense_v);
-    double dissip = 0.0;
-
-    if (c->part.type != PART_RESISTOR)
-      continue;
-
+    has_dc = (vin != PHYSICS2_NODE_NONE && gnd != PHYSICS2_NODE_NONE);
     if (has_dc) {
-      if (is_power_pos(c->node1) && is_sense(c->node2))
-        drop = fabs(vin_v - sense_v);
-      else if (is_sense(c->node1) && name_is(c->node2, "GND"))
-        drop = fabs(sense_v);
-      else if (is_power_pos(c->node1) && name_is(c->node2, "GND"))
-        drop = fabs(vin_v);
-      if (c->part.value > 0.0)
-        dissip = (drop * drop) / c->part.value;
+      double *node_volts = NULL;
+      acc = physics2_accumulator_create(compiled.program.next_node +
+                                        compiled.program.branch_count);
+      if (!acc) {
+        snprintf(out->summary, sizeof(out->summary),
+                 "DC Physics2 accumulator alloc failed");
+        out->passed = 0;
+        compiler_free_physics_program(&compiled);
+        compiler_physics_design_free(&phys);
+        return 1;
+      }
+      memset(&ctx, 0, sizeof(ctx));
+      if (!physics2_context_init(&ctx, &compiled.program, acc, 0.0) ||
+          !physics2_context_step(&ctx, gnd)) {
+        snprintf(out->summary, sizeof(out->summary),
+                 "DC Physics2 solve failed (singular/diverge/stamp)");
+        out->passed = 0;
+        physics2_context_free(&ctx);
+        physics2_accumulator_free(acc);
+        compiler_free_physics_program(&compiled);
+        compiler_physics_design_free(&phys);
+        root = cJSON_CreateObject();
+        cJSON_AddStringToObject(root, "schema", "verification.v1");
+        cJSON_AddStringToObject(root, "analysis", "dc_solve_failed");
+        cJSON_AddBoolToObject(root, "passed", 0);
+        cJSON_AddStringToObject(root, "summary", out->summary);
+        printed = cJSON_Print(root);
+        cJSON_Delete(root);
+        fp = fopen(report_path, "wb");
+        if (fp && printed) {
+          fputs(printed, fp);
+          fputc('\n', fp);
+          fclose(fp);
+        }
+        free(printed);
+        return 1;
+      }
+
+      node_volts = calloc(compiled.node_count, sizeof(*node_volts));
+      for (ni = 0; ni < compiled.node_count; ni++) {
+        NodeId id = compiled.nodes[ni].id;
+        if (id < ctx.solution_size)
+          node_volts[ni] = ctx.solution[id];
+      }
+
+      if (sense != PHYSICS2_NODE_NONE) {
+        sense_v = ctx.solution[sense];
+        /* Prefer the looked-up name over generic "vout". */
+        for (ni = 0; ni < compiled.node_count; ni++) {
+          if (compiled.nodes[ni].id == sense) {
+            strncpy(out->measured_node, compiled.nodes[ni].name,
+                    sizeof(out->measured_node) - 1);
+            break;
+          }
+        }
+        out->measured_v = sense_v;
+      } else {
+        /* Phase 4: never silently report VIN as the measured sense voltage. */
+        sense_v = 0.0;
+        out->measured_v = 0.0;
+        out->measured_node[0] = '\0';
+      }
+      corner_low = sense_v * 0.99;
+      corner_high = sense_v * 1.01;
+
+      out->rating_violations = 0;
+      for (i = 0; i < schematic->component_count; i++) {
+        const CompiledComponent *c = &schematic->components[i];
+        NodeId n0 = compiler_physics_find_node(&compiled, c->node1);
+        NodeId n1 = compiler_physics_find_node(&compiled, c->node2);
+        double drop = 0.0;
+        double dissip = 0.0;
+
+        if (n0 != PHYSICS2_NODE_NONE && n1 != PHYSICS2_NODE_NONE)
+          drop = fabs(ctx.solution[n0] - ctx.solution[n1]);
+        if (c->part.type == PART_RESISTOR && c->part.value > 0.0)
+          dissip = (drop * drop) / c->part.value;
+
+        if (c->part.v_rating > 0.0 && drop > c->part.v_rating)
+          out->rating_violations++;
+        if (c->part.power_rating_w > 0.0 && dissip > c->part.power_rating_w)
+          out->rating_violations++;
+      }
+
+      physics2_context_free(&ctx);
+      physics2_accumulator_free(acc);
+
+      if (schematic->component_count > 0 &&
+          schematic->components[0].part.type == PART_RESISTOR)
+        ac_mag = 1.0 / schematic->components[0].part.value;
+
+      out->passed = (out->rating_violations == 0) ? 1 : 0;
+      out->physics2_caps = phys_caps;
+      out->physics2_inds = phys_inds;
+      out->physics2_instr = (int)compiled.program.instruction_count;
+      snprintf(out->summary, sizeof(out->summary),
+               "dc_sense=%s:%.6f corner=[%.6f,%.6f] phys2_instr=%zu C=%d L=%d "
+               "R=%d D=%d rating_violations=%d",
+               out->measured_node[0] ? out->measured_node : "(none)", sense_v,
+               corner_low, corner_high, compiled.program.instruction_count,
+               phys_caps, phys_inds, phys_res, phys_diodes,
+               out->rating_violations);
+
+      root = cJSON_CreateObject();
+      cJSON_AddStringToObject(root, "schema", "verification.v1");
+      cJSON_AddStringToObject(root, "analysis",
+                              phys_diodes ? "diode_dc_newton"
+                                          : "dc_operating_point");
+      cJSON_AddBoolToObject(root, "passed", out->passed ? 1 : 0);
+      cJSON_AddNumberToObject(root, "rating_violations", out->rating_violations);
+      if (out->measured_node[0]) {
+        cJSON_AddStringToObject(root, "measured_node", out->measured_node);
+        cJSON_AddNumberToObject(root, "measured_v", out->measured_v);
+        /* Compat: "vout" only when a real sense node was measured. */
+        cJSON_AddNumberToObject(root, "vout", sense_v);
+      }
+      cJSON_AddNumberToObject(root, "corner_low", corner_low);
+      cJSON_AddNumberToObject(root, "corner_high", corner_high);
+      cJSON_AddNumberToObject(root, "ac_magnitude", ac_mag);
+      cJSON_AddNumberToObject(root, "physics2_instruction_count",
+                              (double)compiled.program.instruction_count);
+      cJSON_AddNumberToObject(root, "physics2_capacitors", phys_caps);
+      cJSON_AddNumberToObject(root, "physics2_inductors", phys_inds);
+      nodes_js = cJSON_CreateObject();
+      for (ni = 0; ni < compiled.node_count; ni++) {
+        if (node_volts)
+          cJSON_AddNumberToObject(nodes_js, compiled.nodes[ni].name,
+                                  node_volts[ni]);
+      }
+      cJSON_AddItemToObject(root, "node_voltages", nodes_js);
+      cJSON_AddStringToObject(root, "summary", out->summary);
+      printed = cJSON_Print(root);
+      cJSON_Delete(root);
+      free(node_volts);
+
+      fp = fopen(report_path, "wb");
+      if (fp && printed) {
+        fputs(printed, fp);
+        fputc('\n', fp);
+        fclose(fp);
+        rc = out->passed ? 0 : 1;
+      }
+      free(printed);
+
+      compiler_free_physics_program(&compiled);
+      compiler_physics_design_free(&phys);
+      return rc;
     }
 
-    if (c->part.v_rating > 0.0 && drop > c->part.v_rating)
-      out->rating_violations++;
-    if (c->part.power_rating_w > 0.0 && dissip > c->part.power_rating_w)
-      out->rating_violations++;
+    snprintf(out->summary, sizeof(out->summary),
+             "no DC bias (need power net + GND); phys2_instr=%zu C=%d",
+             compiled.program.instruction_count, phys_caps);
+    out->passed = 0;
+    root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "schema", "verification.v1");
+    cJSON_AddStringToObject(root, "analysis", "no_dc_bias");
+    cJSON_AddBoolToObject(root, "passed", 0);
+    cJSON_AddNumberToObject(root, "physics2_capacitors", phys_caps);
+    cJSON_AddStringToObject(root, "summary", out->summary);
+    printed = cJSON_Print(root);
+    cJSON_Delete(root);
+    fp = fopen(report_path, "wb");
+    if (fp && printed) {
+      fputs(printed, fp);
+      fputc('\n', fp);
+      fclose(fp);
+    }
+    free(printed);
+    compiler_free_physics_program(&compiled);
+    compiler_physics_design_free(&phys);
+    return 1;
   }
-
-  out->passed = (out->rating_violations == 0) ? 1 : 0;
-  snprintf(out->summary, sizeof(out->summary),
-           "dc_sense=%.6f corner=[%.6f,%.6f] ac_mag=%.6g rating_violations=%d",
-           sense_v, corner_low, corner_high, ac_mag, out->rating_violations);
-
-  root = cJSON_CreateObject();
-  cJSON_AddStringToObject(root, "schema", "verification.v1");
-  cJSON_AddStringToObject(root, "analysis",
-                          has_diode ? "diode_dc_newton" : "dc_operating_point");
-  cJSON_AddBoolToObject(root, "passed", out->passed ? 1 : 0);
-  cJSON_AddNumberToObject(root, "rating_violations", out->rating_violations);
-  cJSON_AddNumberToObject(root, "vout", sense_v);
-  cJSON_AddNumberToObject(root, "corner_low", corner_low);
-  cJSON_AddNumberToObject(root, "corner_high", corner_high);
-  cJSON_AddNumberToObject(root, "ac_magnitude", ac_mag);
-  cJSON_AddStringToObject(root, "summary", out->summary);
-  printed = cJSON_Print(root);
-  cJSON_Delete(root);
-
-  fp = fopen(report_path, "wb");
-  if (fp && printed) {
-    fputs(printed, fp);
-    fputc('\n', fp);
-    fclose(fp);
-    rc = out->passed ? 0 : 1;
-  }
-  free(printed);
-
-done:
-  physics2_accumulator_free(acc);
-  physics2_program_free(&program);
-  free(prims);
-  free(node_names);
-  free(node_ids);
-  return rc;
 }

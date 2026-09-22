@@ -1,0 +1,3 @@
+g28_dc_capacitor_open
+vmid=5.000000
+ok=1

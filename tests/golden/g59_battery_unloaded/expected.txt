@@ -1,0 +1,2 @@
+g59_battery_unloaded
+ok=1

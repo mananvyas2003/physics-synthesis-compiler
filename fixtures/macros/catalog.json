@@ -1,0 +1,76 @@
+{
+  "schema": "macro-catalog.v1",
+  "description": "Industrial macro corpus (Phase 22). Expand recipes are deterministic passives; stubs are not switching/IC physics.",
+  "macros": [
+    {
+      "id": "bat_ldo_3v3",
+      "family": "POWER",
+      "path": "fixtures/blocks/bat_ldo_3v3.json"
+    },
+    {
+      "id": "battery_input",
+      "family": "POWER",
+      "path": "fixtures/blocks/battery_input.json"
+    },
+    {
+      "id": "buck_5v_stub",
+      "family": "POWER",
+      "path": "fixtures/blocks/buck_5v_stub.json"
+    },
+    {
+      "id": "decouple_100n",
+      "family": "DIGITAL",
+      "path": "fixtures/blocks/decouple_100n.json"
+    },
+    {
+      "id": "divider_10k",
+      "family": "ANALOG",
+      "path": "fixtures/blocks/divider_10k.json"
+    },
+    {
+      "id": "i2c_pullups",
+      "family": "DIGITAL",
+      "path": "fixtures/blocks/i2c_pullups.json"
+    },
+    {
+      "id": "i2c_temp_sensor",
+      "family": "SENSING",
+      "path": "fixtures/blocks/i2c_temp_sensor.json"
+    },
+    {
+      "id": "ldo_5v",
+      "family": "POWER",
+      "path": "fixtures/blocks/ldo_5v.json"
+    },
+    {
+      "id": "mcu_min_system",
+      "family": "DIGITAL",
+      "path": "fixtures/blocks/mcu_min_system.json"
+    },
+    {
+      "id": "rc_lpf",
+      "family": "ANALOG",
+      "path": "fixtures/blocks/rc_lpf.json"
+    },
+    {
+      "id": "rev_polarity",
+      "family": "PROTECTION",
+      "path": "fixtures/blocks/rev_polarity.json"
+    },
+    {
+      "id": "status_led",
+      "family": "ACTUATION",
+      "path": "fixtures/blocks/status_led.json"
+    },
+    {
+      "id": "usb_c_sink",
+      "family": "INTERFACE",
+      "path": "fixtures/blocks/usb_c_sink.json"
+    },
+    {
+      "id": "vin_12v",
+      "family": "POWER",
+      "path": "fixtures/blocks/vin_12v.json"
+    }
+  ]
+}

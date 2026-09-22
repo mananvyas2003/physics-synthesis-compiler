@@ -1,0 +1,3 @@
+g55_opamp_noninv
+config=noninv_gain2
+ok=1

@@ -44,16 +44,18 @@ CLI / browser
   bind_score_passive → CompiledSchematic
         ↓
   verify_bound_schematic
-        ├─ LED / RC / RL analytical heuristics
-        ├─ transistor/IC structural auto-pass
-        └─ else Physics2 linear DC (resistors-focused)
+        ├─ LED-only (no C/L) → analytical shortcut
+        ├─ transistor/IC → fail-closed (unsupported; no fake pass)
+        └─ else PhysDesign → compiler_lower_to_physics2 → DC step
+              (R/C/L/diode + injected Vsrc; C open / L short at DC)
         ↓
   mfg_dfm → vendor_bridge → vendor_next dfm (3 rules)
         ↓
   C text emit: .kicad_sch, .net, bom.csv, snapshots
 ```
 
-**Parallel unused on generate path:** vendor_next MNA Newton; `part_provider` / `e_series`; `CompilerPhysDesign` → Physics2 lowering API; SQLite `FabRules`.
+**Parallel unused on generate path:** vendor_next MNA Newton; `part_provider` / `e_series`; SQLite `FabRules`.  
+**Authoritative Physics2 path (Phase 2 done):** `compiler_schematic_to_phys_design` → `compiler_lower_to_physics2`.
 
 ```mermaid
 flowchart LR
@@ -110,7 +112,10 @@ flowchart LR
 | Bind hints from IR | `compiler.c` `load_bind_hints` | LLM shapes selection window |
 | KiCad emit inside compiler | `compiler_write_kicad_sch` | T mixed into Q |
 | Manufacturer data on compile IR | `CompiledComponent` embeds full `DBPart` | Physics path carries MPN |
-| Verify structural auto-pass | `verify_report.c` transistor/IC | False confidence |
+| ~~Verify silent C/L drop~~ | **fixed Phase 2** — C/L in PhysDesign/Physics2 | Phase 3 golden still required |
+| Sense fallback to VIN | named look-ups exist; silent VIN if no sense | Phase 4 |
+| Hardcoded bind stress | `compiler.c` `applied_v = 5.0` | Phase 5 — ratings at bind ignore solved V |
+| Verify IC/xstr | fail-closed `unsupported` | Correct refusal; no device equations yet |
 | Bridge invents ratings | `vendor_bridge.c` 50 V / 5 V defaults | Fake physics for DFM |
 | Three DFM meanings | `dfm_compose` vs `mfg_dfm`/vendor vs `FabRules` | Naming/ownership confusion |
 | UI drift | `public/` vs `web/static/` | Local vs Vercel divergence |

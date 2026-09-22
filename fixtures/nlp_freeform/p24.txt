@@ -1,0 +1,1 @@
+Capacitor 1uF between 3V3 and GND.

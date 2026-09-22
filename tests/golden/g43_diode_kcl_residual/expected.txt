@@ -1,0 +1,3 @@
+g43_diode_kcl_residual
+kcl_ok=1
+ok=1

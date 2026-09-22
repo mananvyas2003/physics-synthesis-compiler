@@ -1,0 +1,3 @@
+g71_dfm_telemetry
+telemetry=1
+ok=1

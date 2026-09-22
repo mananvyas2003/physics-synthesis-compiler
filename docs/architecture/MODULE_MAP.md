@@ -128,7 +128,7 @@ Third-party amalgams (`sqlite3`, `cJSON`) summarized once.
 
 | File | RESP | MATH | CLASS |
 |------|------|------|-------|
-| verify_report | verification.v1 | LED analytical; diode Physics2 Newton; IC fail-closed | S |
+| verify_report | verification.v1 | PhysDesign→Physics2 authoritative; LED-only analytical; IC/xstr fail-closed; C/L stay in stream (DC open/short) — see REPAIR_PLAN | S |
 | emit_* | net/bom/snapshot | none | T |
 
 ---

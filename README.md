@@ -62,6 +62,8 @@ export SYNTH_BIN=$PWD/build/synth
 
 Live Gemini prompt→schematic: set `GEMINI_API_KEY` (see [docs/GEMINI_PROMPT.md](docs/GEMINI_PROMPT.md)).
 
+**Hosting:** [Vercel](docs/VERCEL_DEPLOYMENT.md) (serverless, ~50s) or **[Railway](docs/RAILWAY.md)** (Docker service, 300s generate).
+
 ## Chat UI (browser)
 
 ```bash

@@ -1,0 +1,3 @@
+g57_ldo_dropout
+region=dropout
+ok=1

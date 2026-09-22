@@ -1,0 +1,15 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "text": "{\"schema\":\"schematic-ir.v1\",\"name\":\"gemini_replay_divider\",\"description\":\"Recorded Gemini-shaped replay cassette (Phase 21)\",\"category\":\"GEMINI_REPLAY\",\"parts\":[{\"mpn\":\"NLP-R1\",\"type\":\"resistor\",\"value\":10000.0,\"package\":\"0603\",\"v_rating\":50.0,\"power_rating_w\":0.125},{\"mpn\":\"NLP-R2\",\"type\":\"resistor\",\"value\":10000.0,\"package\":\"0603\",\"v_rating\":50.0,\"power_rating_w\":0.125}],\"components\":[{\"role\":\"r1\",\"part_type\":\"resistor\",\"quantity\":1,\"target_value\":10000,\"package\":\"0603\"},{\"role\":\"r2\",\"part_type\":\"resistor\",\"quantity\":1,\"target_value\":10000,\"package\":\"0603\"}],\"nodes\":[\"VIN\",\"VOUT\",\"GND\"],\"connections\":[{\"role\":\"r1\",\"pin\":\"1\",\"node\":\"VIN\"},{\"role\":\"r1\",\"pin\":\"2\",\"node\":\"VOUT\"},{\"role\":\"r2\",\"pin\":\"1\",\"node\":\"VOUT\"},{\"role\":\"r2\",\"pin\":\"2\",\"node\":\"GND\"}]}"
+          }
+        ]
+      },
+      "finishReason": "STOP"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+g26_903_sensor_power
+bound_components=6
+bound_caps=2
+physics2_caps=2
+sensor_vdd_ok=1

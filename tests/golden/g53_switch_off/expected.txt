@@ -1,0 +1,3 @@
+g53_switch_off
+state=off
+ok=1

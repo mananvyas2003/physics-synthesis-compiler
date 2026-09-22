@@ -1,0 +1,3 @@
+g49_nmos_linear
+region=linear
+ok=1

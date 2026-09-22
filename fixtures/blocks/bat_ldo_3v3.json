@@ -1,0 +1,119 @@
+{
+  "id": "bat_ldo_3v3",
+  "family": "POWER",
+  "ports": [
+    {
+      "name": "vin",
+      "kind": "power_in",
+      "electrical": {
+        "voltage": {
+          "min": 3.0,
+          "max": 4.2
+        },
+        "current": {
+          "min": 0.0,
+          "max": 0.5
+        },
+        "impedance_ohms": 1.0
+      }
+    },
+    {
+      "name": "vout",
+      "kind": "power_out",
+      "electrical": {
+        "voltage": {
+          "min": 3.2,
+          "max": 3.4
+        },
+        "current": {
+          "min": 0.0,
+          "max": 0.5
+        },
+        "impedance_ohms": 0.1
+      }
+    },
+    {
+      "name": "gnd",
+      "kind": "gnd",
+      "electrical": {
+        "voltage": {
+          "min": 0,
+          "max": 0
+        },
+        "current": {
+          "min": 0.0,
+          "max": 0
+        },
+        "impedance_ohms": 0
+      }
+    }
+  ],
+  "expand": {
+    "parts": [
+      {
+        "mpn": "DEMO-10K-0603-A",
+        "type": "resistor",
+        "value": 10000.0,
+        "package": "0603",
+        "v_rating": 50.0,
+        "power_rating_w": 0.125
+      },
+      {
+        "mpn": "DEMO-10U-0603-A",
+        "type": "capacitor",
+        "value": 1e-05,
+        "package": "0603",
+        "v_rating": 16.0,
+        "power_rating_w": 0.0
+      }
+    ],
+    "components": [
+      {
+        "role": "fb",
+        "part_type": "resistor",
+        "quantity": 1,
+        "target_value": 10000.0,
+        "package": "0603"
+      },
+      {
+        "role": "cout",
+        "part_type": "capacitor",
+        "quantity": 1,
+        "target_value": 1e-05,
+        "package": "0603"
+      }
+    ],
+    "nodes": [
+      "VBAT",
+      "3V3",
+      "GND"
+    ],
+    "connections": [
+      {
+        "role": "fb",
+        "pin": "1",
+        "node": "VBAT"
+      },
+      {
+        "role": "fb",
+        "pin": "2",
+        "node": "3V3"
+      },
+      {
+        "role": "cout",
+        "pin": "1",
+        "node": "3V3"
+      },
+      {
+        "role": "cout",
+        "pin": "2",
+        "node": "GND"
+      }
+    ],
+    "port_nets": {
+      "vin": "VBAT",
+      "vout": "3V3",
+      "gnd": "GND"
+    }
+  }
+}

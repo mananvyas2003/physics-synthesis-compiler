@@ -1,0 +1,1 @@
+Use a 4.7k I2C pull-up on the 3V3 rail.

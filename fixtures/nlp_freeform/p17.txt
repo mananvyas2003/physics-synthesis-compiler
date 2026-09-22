@@ -1,0 +1,1 @@
+RC filter: 1k resistor and 100nF capacitor from VIN to VOUT.

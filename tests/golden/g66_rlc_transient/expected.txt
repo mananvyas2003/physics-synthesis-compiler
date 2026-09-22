@@ -1,0 +1,2 @@
+g66_rlc_transient
+ok=1

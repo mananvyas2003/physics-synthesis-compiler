@@ -1,0 +1,3 @@
+g50_nmos_saturation
+region=saturation
+ok=1

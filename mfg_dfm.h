@@ -38,8 +38,10 @@ MfgDfmProfile mfg_dfm_profile_wearable(void);
 /* Load profile JSON; on failure leave *out unchanged and return 1. */
 int mfg_dfm_profile_load_json(const char *path, MfgDfmProfile *out);
 
-/* Builtin rules: floating_pin, missing_footprint, component_height,
- * profile_consistency, package_vs_profile (trace/clearance vs package). */
+/* Builtin rules: floating_pin, missing_footprint, missing_package,
+ * unsupported_package, component_height, profile_consistency,
+ * package_vs_profile, package_current. Report lists rules_checked +
+ * profile_fields_used (copper_weight_oz stored but unused). */
 int mfg_dfm_check_schematic(const CompiledSchematic *schematic,
                             const MfgDfmProfile *profile,
                             const char *report_path, MfgDfmResult *out);

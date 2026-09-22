@@ -1,0 +1,3 @@
+g44_bjt_cutoff
+region=cutoff
+ok=1

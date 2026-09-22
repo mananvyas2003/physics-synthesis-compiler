@@ -1,0 +1,1 @@
+Low-pass RC with 10k and 10nF.

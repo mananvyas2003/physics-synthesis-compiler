@@ -1,0 +1,3 @@
+g46_bjt_saturation
+region=saturation
+ok=1

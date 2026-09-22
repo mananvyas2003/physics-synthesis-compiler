@@ -1,0 +1,3 @@
+g40_two_diodes
+status=ok
+ok=1

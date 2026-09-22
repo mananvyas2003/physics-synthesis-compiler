@@ -1,0 +1,1 @@
+Build a battery input with reverse-polarity protection.

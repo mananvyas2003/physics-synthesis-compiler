@@ -1,0 +1,13 @@
+{
+  "schema": "test-run.v1",
+  "test": "903_SENSOR_POWER_MACRO",
+  "topology": "sensor_supply_conditioning_macro_903",
+  "bound_components": 6,
+  "bound_caps": 2,
+  "physics2_caps": 2,
+  "physics2_instr": 7,
+  "measured_node": "SENSOR_VDD",
+  "measured_v": 3.000000,
+  "expected_v": 3.000000,
+  "passed": true
+}

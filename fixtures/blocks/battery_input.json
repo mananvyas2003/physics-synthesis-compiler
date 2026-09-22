@@ -1,0 +1,77 @@
+{
+  "id": "battery_input",
+  "family": "POWER",
+  "ports": [
+    {
+      "name": "vbat_out",
+      "kind": "power_out",
+      "electrical": {
+        "voltage": {
+          "min": 3.0,
+          "max": 4.2
+        },
+        "current": {
+          "min": 0.0,
+          "max": 1.0
+        },
+        "impedance_ohms": 0.1
+      }
+    },
+    {
+      "name": "gnd",
+      "kind": "gnd",
+      "electrical": {
+        "voltage": {
+          "min": 0,
+          "max": 0
+        },
+        "current": {
+          "min": 0.0,
+          "max": 0
+        },
+        "impedance_ohms": 0
+      }
+    }
+  ],
+  "expand": {
+    "parts": [
+      {
+        "mpn": "DEMO-100K-0603-A",
+        "type": "resistor",
+        "value": 100000.0,
+        "package": "0603",
+        "v_rating": 50.0,
+        "power_rating_w": 0.125
+      }
+    ],
+    "components": [
+      {
+        "role": "bleed",
+        "part_type": "resistor",
+        "quantity": 1,
+        "target_value": 100000,
+        "package": "0603"
+      }
+    ],
+    "nodes": [
+      "VBAT",
+      "GND"
+    ],
+    "connections": [
+      {
+        "role": "bleed",
+        "pin": "1",
+        "node": "VBAT"
+      },
+      {
+        "role": "bleed",
+        "pin": "2",
+        "node": "GND"
+      }
+    ],
+    "port_nets": {
+      "vbat_out": "VBAT",
+      "gnd": "GND"
+    }
+  }
+}

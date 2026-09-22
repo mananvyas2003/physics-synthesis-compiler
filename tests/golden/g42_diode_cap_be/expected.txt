@@ -1,0 +1,3 @@
+g42_diode_cap_be
+status=ok
+ok=1

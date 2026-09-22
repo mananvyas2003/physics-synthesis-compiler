@@ -1,0 +1,3 @@
+g54_opamp_follower
+config=follower
+ok=1

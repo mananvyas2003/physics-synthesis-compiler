@@ -1,0 +1,2 @@
+g58_battery_load
+ok=1

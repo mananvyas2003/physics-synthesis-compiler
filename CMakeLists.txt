@@ -31,6 +31,7 @@ set(SYNTH_INCLUDE_DIRS
   ${CMAKE_CURRENT_SOURCE_DIR}/compose
   ${CMAKE_CURRENT_SOURCE_DIR}/bind
   ${CMAKE_CURRENT_SOURCE_DIR}/verify
+  ${CMAKE_CURRENT_SOURCE_DIR}/nlp
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cJSON
   ${CMAKE_CURRENT_SOURCE_DIR}/vendor_next/src
@@ -94,10 +95,13 @@ add_library(synth_core STATIC
   emit/emit_bom.c
   emit/emit_netlist.c
   emit/emit_snapshot.c
+  emit/emit_pcb.c
   spec/spec_load.c
   spec/llm_provider.c
   spec/schematic_load.c
   spec/gemini_schematic.c
+  nlp/nlp.c
+  nlp/nlp_runtime.c
   compose/compose.c
   bind/bind_scorer.c
   verify/verify_report.c
@@ -107,6 +111,7 @@ add_library(synth_core STATIC
   cli/cmd_compile.c
   cli/cmd_physics2.c
   cli/cmd_generate.c
+  cli/cmd_parse.c
 )
 target_include_directories(synth_core PUBLIC ${SYNTH_INCLUDE_DIRS})
 target_link_libraries(synth_core PUBLIC sqlite3 cjson electronics_core)
@@ -117,6 +122,12 @@ elseif(UNIX AND NOT APPLE)
   target_link_libraries(synth_core PUBLIC pthread dl m)
 elseif(APPLE)
   target_link_libraries(synth_core PUBLIC pthread m)
+endif()
+
+option(SYNTH_ENABLE_ONNX "Link optional ONNX Runtime for neural NLP (off by default)" OFF)
+if(SYNTH_ENABLE_ONNX)
+  message(WARNING "SYNTH_ENABLE_ONNX: ORT not vendored yet; nlp_runtime stays fail-closed")
+  target_compile_definitions(synth_core PUBLIC SYNTH_ENABLE_ONNX=1)
 endif()
 
 add_executable(synth main.c)

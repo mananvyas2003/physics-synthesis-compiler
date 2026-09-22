@@ -12,6 +12,12 @@ typedef struct {
   int passed;
   int rating_violations;
   char summary[256];
+  /* Named-node measurement (never silently substituted with VIN). */
+  double measured_v;
+  char measured_node[64];
+  int physics2_caps;
+  int physics2_inds;
+  int physics2_instr;
 } VerifyResult;
 
 /*

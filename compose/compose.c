@@ -221,6 +221,30 @@ int compose_gate4_scenario(ComposeResult *out) {
   return compose_from_block_ids(ids, 5, out);
 }
 
+int compose_industrial_sensor(ComposeResult *out) {
+  const char *ids[] = {"battery_input", "bat_ldo_3v3", "mcu_min_system",
+                       "i2c_temp_sensor", "status_led", "decouple_100n"};
+  return compose_from_block_ids(ids, 6, out);
+}
+
+int compose_power_tree_12v(ComposeResult *out) {
+  const char *ids[] = {"vin_12v", "buck_5v_stub", "ldo_5v", "mcu_min_system",
+                       "status_led"};
+  return compose_from_block_ids(ids, 5, out);
+}
+
+int compose_scenario(const char *name, ComposeResult *out) {
+  if (!name || !out)
+    return 1;
+  if (strcmp(name, "gate4") == 0 || strcmp(name, "usb_iot") == 0)
+    return compose_gate4_scenario(out);
+  if (strcmp(name, "industrial_sensor") == 0)
+    return compose_industrial_sensor(out);
+  if (strcmp(name, "power_tree_12v") == 0)
+    return compose_power_tree_12v(out);
+  return 1;
+}
+
 static int node_in_array(cJSON *nodes, const char *name) {
   cJSON *item;
   cJSON_ArrayForEach(item, nodes) {

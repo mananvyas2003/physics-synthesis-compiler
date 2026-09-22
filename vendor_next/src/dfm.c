@@ -4,6 +4,7 @@
 #include "design.h"
 #include "vec.h"
 
+#include <math.h>
 #include <string.h>
 
 // in dfm.c
@@ -273,12 +274,119 @@ static int check_package_vs_profile(const Design *design,
   return errors;
 }
 
+static int check_missing_package(const Design *design, const DfmProfile *profile,
+                                 DiagnosticList *out) {
+  int errors = 0;
+  (void)profile;
+  if (!design || !out)
+    return -1;
+  for (size_t i = 0; i < vec_len(design->components); ++i) {
+    const Component *component = &design->components[i];
+    if (!component->package || component->package[0] == '\0') {
+      if (diagnostic_add(out, DIAGNOSTIC_ERROR, DIAG_TARGET_COMPONENT,
+                         (uint32_t)i, "missing_package",
+                         "%s has no package code", component->reference) != 0)
+        return -1;
+      errors++;
+    }
+  }
+  return errors;
+}
+
+static int package_is_supported(const char *package) {
+  static const char *ok[] = {"0402", "0603", "0805", "1206", "SOT-23",
+                             "TO-92", "SOD-123", "SMA", "SMB", NULL};
+  size_t i;
+  if (!package || !package[0])
+    return 0;
+  for (i = 0; ok[i]; i++) {
+    if (strcmp(package, ok[i]) == 0)
+      return 1;
+  }
+  return 0;
+}
+
+static int check_unsupported_package(const Design *design,
+                                     const DfmProfile *profile,
+                                     DiagnosticList *out) {
+  int errors = 0;
+  (void)profile;
+  if (!design || !out)
+    return -1;
+  for (size_t i = 0; i < vec_len(design->components); ++i) {
+    const Component *component = &design->components[i];
+    if (!component->package || !component->package[0])
+      continue; /* missing_package owns empty */
+    if (!package_is_supported(component->package)) {
+      if (diagnostic_add(out, DIAGNOSTIC_ERROR, DIAG_TARGET_COMPONENT,
+                         (uint32_t)i, "unsupported_package",
+                         "%s package '%s' not in DFM allow-list",
+                         component->reference, component->package) != 0)
+        return -1;
+      errors++;
+    }
+  }
+  return errors;
+}
+
+/* Crude package ampacity vs sqrt(Pmax/R) when both ratings present. */
+static double package_imax_a(const char *package) {
+  if (!package)
+    return 0.0;
+  if (strcmp(package, "0402") == 0)
+    return 0.05;
+  if (strcmp(package, "0603") == 0)
+    return 0.1;
+  if (strcmp(package, "0805") == 0)
+    return 0.2;
+  if (strcmp(package, "1206") == 0)
+    return 0.35;
+  return 0.0;
+}
+
+static int check_package_current(const Design *design, const DfmProfile *profile,
+                                 DiagnosticList *out) {
+  int errors = 0;
+  (void)profile;
+  if (!design || !out)
+    return -1;
+  for (size_t i = 0; i < vec_len(design->components); ++i) {
+    const Component *component = &design->components[i];
+    double r, p, i_est, i_max;
+    if (component->model.kind != COMPONENT_RESISTOR)
+      continue;
+    r = component->value; /* nominal from component_set_value */
+    if (!(r > 0.0))
+      r = component->model.data.resistor.resistance_ohm.nominal;
+    p = component->electrical.max_power;
+    i_max = package_imax_a(component->package);
+    if (!(r > 0.0) || !(p > 0.0) || !(i_max > 0.0))
+      continue;
+    i_est = sqrt(p / r);
+    if (i_est > i_max * 1.001) {
+      if (diagnostic_add(
+              out, DIAGNOSTIC_ERROR, DIAG_TARGET_COMPONENT, (uint32_t)i,
+              "package_current",
+              "%s package %s I~%.3f A from P=%.3f W / R=%.3g exceeds ~%.3f A",
+              component->reference,
+              component->package ? component->package : "?", i_est, p, r,
+              i_max) != 0)
+        return -1;
+      errors++;
+    }
+  }
+  return errors;
+}
+
 static const DfmRule BUILTIN_RULES[] = {
     {"floating_pin", check_no_floating_pins},
     {"missing_footprint", check_missing_footprints},
+    {"missing_package", check_missing_package},
+    {"unsupported_package", check_unsupported_package},
     {"component_height", check_invalid_dimensions},
     {"profile_consistency", check_profile_consistency},
-    {"package_vs_profile", check_package_vs_profile}};
+    {"package_vs_profile", check_package_vs_profile},
+    {"package_current", check_package_current}};
 
 int dfm_registry_init(DfmRegistry *registry) {
   if (!registry) {

@@ -1,0 +1,77 @@
+{
+  "id": "vin_12v",
+  "family": "POWER",
+  "ports": [
+    {
+      "name": "v12_out",
+      "kind": "power_out",
+      "electrical": {
+        "voltage": {
+          "min": 11.0,
+          "max": 13.0
+        },
+        "current": {
+          "min": 0.0,
+          "max": 2.0
+        },
+        "impedance_ohms": 0.05
+      }
+    },
+    {
+      "name": "gnd",
+      "kind": "gnd",
+      "electrical": {
+        "voltage": {
+          "min": 0,
+          "max": 0
+        },
+        "current": {
+          "min": 0.0,
+          "max": 0
+        },
+        "impedance_ohms": 0
+      }
+    }
+  ],
+  "expand": {
+    "parts": [
+      {
+        "mpn": "DEMO-100K-0603-A",
+        "type": "resistor",
+        "value": 100000.0,
+        "package": "0603",
+        "v_rating": 100.0,
+        "power_rating_w": 0.125
+      }
+    ],
+    "components": [
+      {
+        "role": "bleed",
+        "part_type": "resistor",
+        "quantity": 1,
+        "target_value": 100000,
+        "package": "0603"
+      }
+    ],
+    "nodes": [
+      "V12",
+      "GND"
+    ],
+    "connections": [
+      {
+        "role": "bleed",
+        "pin": "1",
+        "node": "V12"
+      },
+      {
+        "role": "bleed",
+        "pin": "2",
+        "node": "GND"
+      }
+    ],
+    "port_nets": {
+      "v12_out": "V12",
+      "gnd": "GND"
+    }
+  }
+}

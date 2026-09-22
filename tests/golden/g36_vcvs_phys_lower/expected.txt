@@ -1,0 +1,3 @@
+g36_vcvs_phys_lower
+vout=2.000000
+ok=1

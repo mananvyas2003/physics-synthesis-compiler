@@ -1,0 +1,3 @@
+g45_bjt_forward_active
+region=forward_active
+ok=1

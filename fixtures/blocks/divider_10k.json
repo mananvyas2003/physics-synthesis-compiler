@@ -1,0 +1,119 @@
+{
+  "id": "divider_10k",
+  "family": "ANALOG",
+  "ports": [
+    {
+      "name": "vin",
+      "kind": "power_in",
+      "electrical": {
+        "voltage": {
+          "min": 3.0,
+          "max": 3.6
+        },
+        "current": {
+          "min": 0.0,
+          "max": 0.01
+        },
+        "impedance_ohms": 1000
+      }
+    },
+    {
+      "name": "vout",
+      "kind": "signal_out",
+      "electrical": {
+        "voltage": {
+          "min": 0.0,
+          "max": 3.6
+        },
+        "current": {
+          "min": 0.0,
+          "max": 0.001
+        },
+        "impedance_ohms": 5000
+      }
+    },
+    {
+      "name": "gnd",
+      "kind": "gnd",
+      "electrical": {
+        "voltage": {
+          "min": 0,
+          "max": 0
+        },
+        "current": {
+          "min": 0.0,
+          "max": 0
+        },
+        "impedance_ohms": 0
+      }
+    }
+  ],
+  "expand": {
+    "parts": [
+      {
+        "mpn": "DEMO-10K-0603-A",
+        "type": "resistor",
+        "value": 10000.0,
+        "package": "0603",
+        "v_rating": 50.0,
+        "power_rating_w": 0.125
+      },
+      {
+        "mpn": "DEMO-10K-0603-B",
+        "type": "resistor",
+        "value": 10000.0,
+        "package": "0603",
+        "v_rating": 50.0,
+        "power_rating_w": 0.125
+      }
+    ],
+    "components": [
+      {
+        "role": "r1",
+        "part_type": "resistor",
+        "quantity": 1,
+        "target_value": 10000,
+        "package": "0603"
+      },
+      {
+        "role": "r2",
+        "part_type": "resistor",
+        "quantity": 1,
+        "target_value": 10000,
+        "package": "0603"
+      }
+    ],
+    "nodes": [
+      "VIN",
+      "VOUT",
+      "GND"
+    ],
+    "connections": [
+      {
+        "role": "r1",
+        "pin": "1",
+        "node": "VIN"
+      },
+      {
+        "role": "r1",
+        "pin": "2",
+        "node": "VOUT"
+      },
+      {
+        "role": "r2",
+        "pin": "1",
+        "node": "VOUT"
+      },
+      {
+        "role": "r2",
+        "pin": "2",
+        "node": "GND"
+      }
+    ],
+    "port_nets": {
+      "vin": "VIN",
+      "vout": "VOUT",
+      "gnd": "GND"
+    }
+  }
+}

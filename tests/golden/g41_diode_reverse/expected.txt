@@ -1,0 +1,3 @@
+g41_diode_reverse
+reverse=1
+ok=1

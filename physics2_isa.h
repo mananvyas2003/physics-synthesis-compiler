@@ -52,6 +52,11 @@ typedef enum {
   PHYS_OP_TRANSISTOR,
   PHYS_OP_LOGIC_GATE,
 
+  PHYS_OP_SWITCH,
+  PHYS_OP_OPAMP,
+  PHYS_OP_LDO,
+  PHYS_OP_BATTERY,
+
   PHYS_OP_COUNT
 } PhysicsOpcode;
 

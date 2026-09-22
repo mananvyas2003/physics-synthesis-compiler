@@ -1,0 +1,77 @@
+{
+  "id": "decouple_100n",
+  "family": "DIGITAL",
+  "ports": [
+    {
+      "name": "vdd",
+      "kind": "power_in",
+      "electrical": {
+        "voltage": {
+          "min": 3.0,
+          "max": 3.6
+        },
+        "current": {
+          "min": 0.0,
+          "max": 0.05
+        },
+        "impedance_ohms": 0.1
+      }
+    },
+    {
+      "name": "gnd",
+      "kind": "gnd",
+      "electrical": {
+        "voltage": {
+          "min": 0,
+          "max": 0
+        },
+        "current": {
+          "min": 0.0,
+          "max": 0
+        },
+        "impedance_ohms": 0
+      }
+    }
+  ],
+  "expand": {
+    "parts": [
+      {
+        "mpn": "DEMO-100N-0603-A",
+        "type": "capacitor",
+        "value": 1e-07,
+        "package": "0603",
+        "v_rating": 16.0,
+        "power_rating_w": 0.0
+      }
+    ],
+    "components": [
+      {
+        "role": "cby",
+        "part_type": "capacitor",
+        "quantity": 1,
+        "target_value": 1e-07,
+        "package": "0603"
+      }
+    ],
+    "nodes": [
+      "3V3",
+      "GND"
+    ],
+    "connections": [
+      {
+        "role": "cby",
+        "pin": "1",
+        "node": "3V3"
+      },
+      {
+        "role": "cby",
+        "pin": "2",
+        "node": "GND"
+      }
+    ],
+    "port_nets": {
+      "vdd": "3V3",
+      "gnd": "GND"
+    }
+  }
+}

@@ -37,6 +37,10 @@ DEFAULT_DFM = ROOT / "fixtures" / "dfm" / "standard.json"
 
 HOST = os.environ.get("SYNTH_WEB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SYNTH_WEB_PORT", "8765"))
+# Railway / Fly / Cloud Run inject PORT — listen on all interfaces.
+if os.environ.get("PORT"):
+    HOST = "0.0.0.0"
+    PORT = int(os.environ["PORT"])
 
 # Async generate jobs: web request must not be the lifetime of synth.
 _JOBS: dict[str, dict] = {}

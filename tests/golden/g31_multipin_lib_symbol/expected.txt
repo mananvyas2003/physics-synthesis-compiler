@@ -1,0 +1,4 @@
+g31_multipin_lib_symbol
+q_pin_b=1
+ldo_pin_vin=1
+opamp_pin_inp=1

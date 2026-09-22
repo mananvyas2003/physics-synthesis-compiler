@@ -320,6 +320,386 @@ bool physics2_accumulator_solve(const PhysicsAccumulator *accumulator,
 }
 
 /* =========================================================
+ * AC complex MNA (paired re/im — opaque to stamps)
+ * ========================================================= */
+
+struct PhysicsAcSystem {
+  size_t size;
+  double *re; /* n*n */
+  double *im;
+  double *rhs_re;
+  double *rhs_im;
+};
+
+void physics2_ac_free(PhysicsAcSystem *sys);
+
+static size_t ac_index(const PhysicsAcSystem *sys, size_t row, size_t col) {
+  return row * sys->size + col;
+}
+
+PhysicsAcSystem *physics2_ac_create(size_t size) {
+  PhysicsAcSystem *sys;
+  if (size == 0)
+    return NULL;
+  sys = calloc(1, sizeof(*sys));
+  if (!sys)
+    return NULL;
+  if (size > SIZE_MAX / size)
+    goto fail;
+  sys->re = calloc(size * size, sizeof(double));
+  sys->im = calloc(size * size, sizeof(double));
+  sys->rhs_re = calloc(size, sizeof(double));
+  sys->rhs_im = calloc(size, sizeof(double));
+  if (!sys->re || !sys->im || !sys->rhs_re || !sys->rhs_im)
+    goto fail;
+  sys->size = size;
+  return sys;
+fail:
+  physics2_ac_free(sys);
+  return NULL;
+}
+
+void physics2_ac_free(PhysicsAcSystem *sys) {
+  if (!sys)
+    return;
+  free(sys->re);
+  free(sys->im);
+  free(sys->rhs_re);
+  free(sys->rhs_im);
+  free(sys);
+}
+
+void physics2_ac_clear(PhysicsAcSystem *sys) {
+  if (!sys)
+    return;
+  memset(sys->re, 0, sys->size * sys->size * sizeof(double));
+  memset(sys->im, 0, sys->size * sys->size * sizeof(double));
+  memset(sys->rhs_re, 0, sys->size * sizeof(double));
+  memset(sys->rhs_im, 0, sys->size * sizeof(double));
+}
+
+size_t physics2_ac_size(const PhysicsAcSystem *sys) {
+  return sys ? sys->size : 0;
+}
+
+bool physics2_ac_add(PhysicsAcSystem *sys, size_t row, size_t column, double re,
+                     double im) {
+  size_t idx;
+  if (!sys || row >= sys->size || column >= sys->size)
+    return false;
+  if (!isfinite(re) || !isfinite(im))
+    return false;
+  idx = ac_index(sys, row, column);
+  sys->re[idx] += re;
+  sys->im[idx] += im;
+  return true;
+}
+
+bool physics2_ac_add_rhs(PhysicsAcSystem *sys, size_t row, double re,
+                         double im) {
+  if (!sys || row >= sys->size)
+    return false;
+  if (!isfinite(re) || !isfinite(im))
+    return false;
+  sys->rhs_re[row] += re;
+  sys->rhs_im[row] += im;
+  return true;
+}
+
+void physics2_ac_mag_phase(double re, double im, double *mag_out,
+                           double *phase_deg_out) {
+  double mag = sqrt(re * re + im * im);
+  if (mag_out)
+    *mag_out = mag;
+  if (phase_deg_out)
+    *phase_deg_out = (mag < 1e-30) ? 0.0 : atan2(im, re) * (180.0 / 3.14159265358979323846);
+}
+
+static void cplx_mul(double ar, double ai, double br, double bi, double *cr,
+                     double *ci) {
+  *cr = ar * br - ai * bi;
+  *ci = ar * bi + ai * br;
+}
+
+static int cplx_div(double ar, double ai, double br, double bi, double *cr,
+                    double *ci) {
+  double d = br * br + bi * bi;
+  if (d < 1e-30)
+    return 0;
+  *cr = (ar * br + ai * bi) / d;
+  *ci = (ai * br - ar * bi) / d;
+  return 1;
+}
+
+bool physics2_ac_solve(const PhysicsAcSystem *sys, NodeId reference_node,
+                       double *x_re, double *x_im) {
+  size_t n, i, j, k;
+  double *ar, *ai, *br, *bi;
+
+  if (!sys || !x_re || !x_im)
+    return false;
+  n = sys->size;
+  if (n == 0 || reference_node >= n)
+    return false;
+
+  ar = malloc(n * n * sizeof(double));
+  ai = malloc(n * n * sizeof(double));
+  br = malloc(n * sizeof(double));
+  bi = malloc(n * sizeof(double));
+  if (!ar || !ai || !br || !bi) {
+    free(ar);
+    free(ai);
+    free(br);
+    free(bi);
+    return false;
+  }
+  memcpy(ar, sys->re, n * n * sizeof(double));
+  memcpy(ai, sys->im, n * n * sizeof(double));
+  memcpy(br, sys->rhs_re, n * sizeof(double));
+  memcpy(bi, sys->rhs_im, n * sizeof(double));
+
+  /* Ground reference node */
+  for (j = 0; j < n; j++) {
+    ar[reference_node * n + j] = 0.0;
+    ai[reference_node * n + j] = 0.0;
+    ar[j * n + reference_node] = 0.0;
+    ai[j * n + reference_node] = 0.0;
+  }
+  ar[reference_node * n + reference_node] = 1.0;
+  ai[reference_node * n + reference_node] = 0.0;
+  br[reference_node] = 0.0;
+  bi[reference_node] = 0.0;
+
+  for (k = 0; k < n; k++) {
+    size_t pivot = k;
+    double max_v = ar[k * n + k] * ar[k * n + k] + ai[k * n + k] * ai[k * n + k];
+    for (i = k + 1; i < n; i++) {
+      double v = ar[i * n + k] * ar[i * n + k] + ai[i * n + k] * ai[i * n + k];
+      if (v > max_v) {
+        max_v = v;
+        pivot = i;
+      }
+    }
+    if (max_v < 1e-28) {
+      free(ar);
+      free(ai);
+      free(br);
+      free(bi);
+      return false;
+    }
+    if (pivot != k) {
+      for (j = 0; j < n; j++) {
+        double tr = ar[k * n + j], ti = ai[k * n + j];
+        ar[k * n + j] = ar[pivot * n + j];
+        ai[k * n + j] = ai[pivot * n + j];
+        ar[pivot * n + j] = tr;
+        ai[pivot * n + j] = ti;
+      }
+      {
+        double tr = br[k], ti = bi[k];
+        br[k] = br[pivot];
+        bi[k] = bi[pivot];
+        br[pivot] = tr;
+        bi[pivot] = ti;
+      }
+    }
+    for (i = k + 1; i < n; i++) {
+      double fr, fi;
+      if (!cplx_div(ar[i * n + k], ai[i * n + k], ar[k * n + k], ai[k * n + k],
+                    &fr, &fi))
+        continue;
+      ar[i * n + k] = 0.0;
+      ai[i * n + k] = 0.0;
+      for (j = k + 1; j < n; j++) {
+        double pr, pi;
+        cplx_mul(fr, fi, ar[k * n + j], ai[k * n + j], &pr, &pi);
+        ar[i * n + j] -= pr;
+        ai[i * n + j] -= pi;
+      }
+      {
+        double pr, pi;
+        cplx_mul(fr, fi, br[k], bi[k], &pr, &pi);
+        br[i] -= pr;
+        bi[i] -= pi;
+      }
+    }
+  }
+
+  for (i = n; i-- > 0;) {
+    double sr = br[i], si = bi[i];
+    for (j = i + 1; j < n; j++) {
+      double pr, pi;
+      cplx_mul(ar[i * n + j], ai[i * n + j], x_re[j], x_im[j], &pr, &pi);
+      sr -= pr;
+      si -= pi;
+    }
+    if (!cplx_div(sr, si, ar[i * n + i], ai[i * n + i], &x_re[i], &x_im[i])) {
+      free(ar);
+      free(ai);
+      free(br);
+      free(bi);
+      return false;
+    }
+  }
+
+  free(ar);
+  free(ai);
+  free(br);
+  free(bi);
+  return true;
+}
+
+static bool ac_stamp_admittance(PhysicsAcSystem *sys, NodeId a, NodeId b,
+                                double g_re, double g_im) {
+  if (a == PHYSICS2_NODE_NONE || b == PHYSICS2_NODE_NONE)
+    return false;
+  return physics2_ac_add(sys, a, a, g_re, g_im) &&
+         physics2_ac_add(sys, a, b, -g_re, -g_im) &&
+         physics2_ac_add(sys, b, a, -g_re, -g_im) &&
+         physics2_ac_add(sys, b, b, g_re, g_im);
+}
+
+static bool ac_stamp_instruction(PhysicsAcSystem *sys,
+                                 const PhysicsProgram *program,
+                                 const PhysicsInstruction *ins, double omega) {
+  PhysicsPrimitive *p;
+  NodeId t0, t1, t2, t3;
+  BranchId br;
+  double val, wL;
+
+  if (!sys || !program || !ins)
+    return false;
+  p = physics2_registry_get(&program->primitives, ins->primitive_id);
+  if (!p)
+    return false;
+  t0 = ins->terminals[0];
+  t1 = ins->terminals[1];
+  t2 = ins->terminal_count > 2 ? ins->terminals[2] : PHYSICS2_NODE_NONE;
+  t3 = ins->terminal_count > 3 ? ins->terminals[3] : PHYSICS2_NODE_NONE;
+  br = ins->branch;
+
+  switch (p->kind) {
+  case PHYS_PRIM_RESISTOR:
+  case PHYS_PRIM_SWITCH: {
+    if (p->kind == PHYS_PRIM_SWITCH)
+      val = p->payload.sw.on ? p->payload.sw.ron : p->payload.sw.roff;
+    else
+      val = p->payload.two_terminal.value.nominal;
+    if (!(val > 0.0))
+      return false;
+    return ac_stamp_admittance(sys, t0, t1, 1.0 / val, 0.0);
+  }
+  case PHYS_PRIM_BATTERY: {
+    /* Thevenin: G + Voc shorted for AC (DC bias only) → just Rint */
+    val = p->payload.battery.rint;
+    if (!(val > 0.0))
+      return false;
+    return ac_stamp_admittance(sys, t0, t1, 1.0 / val, 0.0);
+  }
+  case PHYS_PRIM_CAPACITOR:
+    val = p->payload.two_terminal.value.nominal;
+    if (!(val > 0.0) || !(omega > 0.0))
+      return false;
+    /* Y = jωC */
+    return ac_stamp_admittance(sys, t0, t1, 0.0, omega * val);
+  case PHYS_PRIM_INDUCTOR:
+    if (br == PHYSICS2_BRANCH_NONE || !(omega > 0.0))
+      return false;
+    val = p->payload.two_terminal.value.nominal;
+    if (!(val > 0.0))
+      return false;
+    wL = omega * val;
+    /* Vp - Vn - jωL I = 0; I through branch */
+    if (!physics2_ac_add(sys, t0, br, 1.0, 0.0) ||
+        !physics2_ac_add(sys, t1, br, -1.0, 0.0) ||
+        !physics2_ac_add(sys, br, t0, 1.0, 0.0) ||
+        !physics2_ac_add(sys, br, t1, -1.0, 0.0) ||
+        !physics2_ac_add(sys, br, br, 0.0, -wL))
+      return false;
+    return true;
+  case PHYS_PRIM_VSOURCE:
+    if (br == PHYSICS2_BRANCH_NONE)
+      return false;
+    val = p->payload.two_terminal.value.nominal; /* AC phasor ∠0 */
+    if (!isfinite(val))
+      return false;
+    if (!physics2_ac_add(sys, t0, br, 1.0, 0.0) ||
+        !physics2_ac_add(sys, t1, br, -1.0, 0.0) ||
+        !physics2_ac_add(sys, br, t0, 1.0, 0.0) ||
+        !physics2_ac_add(sys, br, t1, -1.0, 0.0) ||
+        !physics2_ac_add_rhs(sys, br, val, 0.0))
+      return false;
+    return true;
+  case PHYS_PRIM_ISOURCE:
+    val = p->payload.two_terminal.value.nominal;
+    if (!isfinite(val))
+      return false;
+    return physics2_ac_add_rhs(sys, t0, -val, 0.0) &&
+           physics2_ac_add_rhs(sys, t1, val, 0.0);
+  case PHYS_PRIM_VCVS:
+  case PHYS_PRIM_OPAMP: {
+    double mu = (p->kind == PHYS_PRIM_OPAMP)
+                    ? p->payload.opamp.gain
+                    : p->payload.controlled_source.gain.nominal;
+    if (br == PHYSICS2_BRANCH_NONE || !isfinite(mu))
+      return false;
+    /* out+:t0 out-:t1 ctrl+:t2 ctrl-:t3 */
+    return physics2_ac_add(sys, t0, br, 1.0, 0.0) &&
+           physics2_ac_add(sys, t1, br, -1.0, 0.0) &&
+           physics2_ac_add(sys, br, t0, 1.0, 0.0) &&
+           physics2_ac_add(sys, br, t1, -1.0, 0.0) &&
+           physics2_ac_add(sys, br, t2, -mu, 0.0) &&
+           physics2_ac_add(sys, br, t3, mu, 0.0);
+  }
+  case PHYS_PRIM_VCCS: {
+    double gm = p->payload.controlled_source.gain.nominal;
+    if (!isfinite(gm))
+      return false;
+    /* I from t0→t1 = gm*(V_t2 - V_t3) */
+    return physics2_ac_add(sys, t0, t2, gm, 0.0) &&
+           physics2_ac_add(sys, t0, t3, -gm, 0.0) &&
+           physics2_ac_add(sys, t1, t2, -gm, 0.0) &&
+           physics2_ac_add(sys, t1, t3, gm, 0.0);
+  }
+  default:
+    /* Diode/BJT/MOS/LDO: not in linear AC (need small-signal J). Skip open. */
+    return true;
+  }
+}
+
+bool physics2_context_step_ac(const PhysicsExecutionContext *context,
+                              NodeId reference_node, double omega_rad,
+                              double *x_re, double *x_im) {
+  PhysicsAcSystem *sys = NULL;
+  size_t i;
+  int ok = 0;
+
+  if (!context || !context->program || !x_re || !x_im)
+    return false;
+  if (!(omega_rad > 0.0) || !isfinite(omega_rad))
+    return false;
+  if (context->solution_size == 0 || reference_node >= context->solution_size)
+    return false;
+
+  sys = physics2_ac_create(context->solution_size);
+  if (!sys)
+    return false;
+
+  for (i = 0; i < context->program->instruction_count; i++) {
+    if (!ac_stamp_instruction(sys, context->program,
+                              &context->program->instructions[i], omega_rad))
+      goto done;
+  }
+
+  if (!physics2_ac_solve(sys, reference_node, x_re, x_im))
+    goto done;
+  ok = 1;
+done:
+  physics2_ac_free(sys);
+  return ok != 0;
+}
+
+/* =========================================================
  * Resistor
  * ========================================================= */
 
@@ -408,7 +788,12 @@ static bool capacitor_stamp(const PhysicsPrimitive *primitive,
   if (terminal_count != 2)
     return false;
 
-  if (context->timestep <= 0.0)
+  /* DC operating point: capacitor is open circuit, but must remain in the
+   * instruction stream (not omitted). timestep==0 means DC analysis. */
+  if (context->timestep == 0.0)
+    return true;
+
+  if (context->timestep < 0.0)
     return false;
 
   capacitance = primitive->payload.two_terminal.value.nominal;
@@ -598,11 +983,12 @@ static bool inductor_stamp(const PhysicsPrimitive *primitive,
                            const NodeId *terminals, uint8_t terminal_count,
                            BranchId branch) {
   double inductance;
-  double conductance;
+  double l_over_dt;
   double previous_current;
   size_t state_index;
-
-  (void)branch;
+  size_t p;
+  size_t n;
+  size_t b;
 
   if (!primitive || !context || !terminals)
     return false;
@@ -610,46 +996,51 @@ static bool inductor_stamp(const PhysicsPrimitive *primitive,
   if (terminal_count != 2)
     return false;
 
-  if (context->timestep <= 0.0)
+  if (branch == PHYSICS2_BRANCH_NONE)
+    return false;
+
+  p = terminals[0];
+  n = terminals[1];
+  b = branch;
+
+  if (b >= physics2_accumulator_size(context->accumulator))
+    return false;
+
+  /* Always use branch current I_L.
+   * DC: Vp - Vn = 0 (ideal short).
+   * BE: Vp - Vn - (L/dt) I = -(L/dt) I_prev
+   */
+  if (!physics2_accumulator_add(context->accumulator, p, b, 1.0))
+    return false;
+  if (!physics2_accumulator_add(context->accumulator, n, b, -1.0))
+    return false;
+  if (!physics2_accumulator_add(context->accumulator, b, p, 1.0))
+    return false;
+  if (!physics2_accumulator_add(context->accumulator, b, n, -1.0))
+    return false;
+
+  if (context->timestep == 0.0)
+    return true; /* V=0 short; RHS[b]=0 */
+
+  if (context->timestep < 0.0)
     return false;
 
   inductance = primitive->payload.two_terminal.value.nominal;
-
   if (!isfinite(inductance) || inductance <= 0.0)
     return false;
 
   if (!inductor_find_state_index(primitive, context, &state_index))
     return false;
-
   if (state_index >= context->state_count)
     return false;
 
   previous_current = context->states[state_index].inductor_previous_current;
+  l_over_dt = inductance / context->timestep;
 
-  conductance = context->timestep / inductance;
-
-  if (!physics2_accumulator_add(context->accumulator, terminals[0],
-                                terminals[0], conductance))
+  if (!physics2_accumulator_add(context->accumulator, b, b, -l_over_dt))
     return false;
-
-  if (!physics2_accumulator_add(context->accumulator, terminals[0],
-                                terminals[1], -conductance))
-    return false;
-
-  if (!physics2_accumulator_add(context->accumulator, terminals[1],
-                                terminals[0], -conductance))
-    return false;
-
-  if (!physics2_accumulator_add(context->accumulator, terminals[1],
-                                terminals[1], conductance))
-    return false;
-
-  if (!physics2_accumulator_add_rhs(context->accumulator, terminals[0],
-                                    -previous_current))
-    return false;
-
-  if (!physics2_accumulator_add_rhs(context->accumulator, terminals[1],
-                                    previous_current))
+  if (!physics2_accumulator_add_rhs(context->accumulator, b,
+                                    -l_over_dt * previous_current))
     return false;
 
   return true;
@@ -662,7 +1053,7 @@ static uint8_t inductor_terminal_count(const PhysicsPrimitive *primitive) {
 
 static uint8_t inductor_extra_unknowns(const PhysicsPrimitive *primitive) {
   (void)primitive;
-  return 0;
+  return 1; /* branch current I_L (DC short + transient BE) */
 }
 
 static void inductor_print(const PhysicsPrimitive *primitive, FILE *stream) {
@@ -1096,9 +1487,20 @@ static const PhysicsPrimitiveOps cccs_ops = {
  *
  *   I = Is * (exp(Vd/(n*Vt)) - 1)
  *   Gd = dI/dVd
- *   Ieq = I - Gd * Vd
+ *   Ieq = I - Gd * Vd_lim
  *   stamp Gd like R; RHS ± Ieq
+ *
+ * Domain: exponent clamped to ±40. Junction soft-limit above
+ * Vcrit = n·Vt·log(1e10) so Newton can leave Vd ≫ 1 without overflow.
  * ========================================================= */
+
+static double diode_vlim(double vd, double n, double vt) {
+  /* Soft critical voltage (~0.6 V for n=1, Vt≈26 mV). */
+  double vcrit = n * vt * log(1.0e10);
+  if (vd > vcrit)
+    return vcrit + log(1.0 + (vd - vcrit)); /* ponytail: soft limit; homotopy later */
+  return vd;
+}
 
 static void diode_shockley(double isat, double n, double vt, double vd,
                            double *current_a, double *conductance_s) {
@@ -1125,6 +1527,7 @@ static bool diode_stamp(const PhysicsPrimitive *primitive,
   double va;
   double vc;
   double vd;
+  double vd_lim;
   double current;
   double gd;
   double ieq;
@@ -1156,8 +1559,10 @@ static bool diode_stamp(const PhysicsPrimitive *primitive,
   }
 
   vd = va - vc;
-  diode_shockley(isat, n, vt, vd, &current, &gd);
-  ieq = current - gd * vd;
+  vd_lim = diode_vlim(vd, n, vt);
+  diode_shockley(isat, n, vt, vd_lim, &current, &gd);
+  /* Companion about Vd_lim: I ≈ Gd·Vd + (I(Vlim) - Gd·Vlim). */
+  ieq = current - gd * vd_lim;
 
   if (!physics2_accumulator_add(context->accumulator, terminals[0], terminals[0],
                                 gd))
@@ -1448,23 +1853,254 @@ bool physics2_primitive_init_logic_gate(PhysicsPrimitive *primitive,
 }
 
 /* =========================================================
- * Transistor family (structural / unsupported nonlinear)
+ * Transistor family
+ * BJT: Ebers-Moll DC (model = ebers_moll). Terminals C,B,E.
+ * MOS: stamp still unsupported (Phase 11).
  * ========================================================= */
+
+static void bjt_diode_branch(double ies_or_ics, double vt, double v_junc,
+                             double *i_branch, double *gd) {
+  double vlim;
+  double exponent;
+  double exp_value;
+  /* Soft-limit like diode (Vcrit ≈ Vt*log(1e10)). */
+  double vcrit = vt * log(1.0e10);
+  vlim = v_junc;
+  if (vlim > vcrit)
+    vlim = vcrit + log(1.0 + (vlim - vcrit));
+  exponent = vlim / vt;
+  if (exponent > 40.0)
+    exponent = 40.0;
+  if (exponent < -40.0)
+    exponent = -40.0;
+  exp_value = exp(exponent);
+  *i_branch = ies_or_ics * (exp_value - 1.0);
+  *gd = ies_or_ics * exp_value / vt;
+}
+
+static bool bjt_ebers_moll_stamp(const PhysicsPrimitive *primitive,
+                                 PhysicsExecutionContext *context,
+                                 const NodeId *terminals) {
+  NodeId nc, nb, ne;
+  double vc, vb, ve;
+  double vbe, vbc;
+  double isat, af, ar, vt;
+  double ies, ics;
+  double i_f, i_r, gd_f, gd_r;
+  double i_c, i_b, i_e;
+  double dIc_dVc, dIc_dVb, dIc_dVe;
+  double dIb_dVc, dIb_dVb, dIb_dVe;
+  double dIe_dVc, dIe_dVb, dIe_dVe;
+  double ieq_c, ieq_b, ieq_e;
+  double scale;
+
+  if (!primitive || !context || !context->accumulator || !terminals)
+    return false;
+
+  nc = terminals[0];
+  nb = terminals[1];
+  ne = terminals[2];
+  if (nc == PHYSICS2_NODE_NONE || nb == PHYSICS2_NODE_NONE ||
+      ne == PHYSICS2_NODE_NONE)
+    return false;
+
+  isat = primitive->payload.transistor.isat;
+  af = primitive->payload.transistor.alpha_f;
+  ar = primitive->payload.transistor.alpha_r;
+  vt = primitive->payload.transistor.vt;
+  scale = primitive->payload.transistor.scale.nominal;
+  if (!(isat > 0.0) || !(af > 0.0 && af < 1.0) || !(ar > 0.0 && ar < 1.0) ||
+      !(vt > 0.0) || !(scale > 0.0))
+    return false;
+
+  ies = (isat * scale) / af;
+  ics = (isat * scale) / ar;
+
+  vc = vb = ve = 0.0;
+  if (context->solution && context->solution_size > 0) {
+    if (nc >= context->solution_size || nb >= context->solution_size ||
+        ne >= context->solution_size)
+      return false;
+    vc = context->solution[nc];
+    vb = context->solution[nb];
+    ve = context->solution[ne];
+  }
+
+  vbe = vb - ve;
+  vbc = vb - vc;
+  bjt_diode_branch(ies, vt, vbe, &i_f, &gd_f);
+  bjt_diode_branch(ics, vt, vbc, &i_r, &gd_r);
+
+  /* Terminal currents into the device (KCL: Ic+Ib+Ie=0). */
+  i_c = af * i_f - i_r;
+  i_e = -i_f + ar * i_r;
+  i_b = (1.0 - af) * i_f + (1.0 - ar) * i_r;
+
+  /* Jacobian ∂I/∂V with VBE=Vb-Ve, VBC=Vb-Vc. */
+  dIc_dVb = af * gd_f - gd_r;
+  dIc_dVe = -af * gd_f;
+  dIc_dVc = gd_r;
+
+  dIe_dVb = -gd_f + ar * gd_r;
+  dIe_dVe = gd_f;
+  dIe_dVc = -ar * gd_r;
+
+  dIb_dVb = (1.0 - af) * gd_f + (1.0 - ar) * gd_r;
+  dIb_dVe = -(1.0 - af) * gd_f;
+  dIb_dVc = -(1.0 - ar) * gd_r;
+
+  ieq_c = i_c - dIc_dVc * vc - dIc_dVb * vb - dIc_dVe * ve;
+  ieq_b = i_b - dIb_dVc * vc - dIb_dVb * vb - dIb_dVe * ve;
+  ieq_e = i_e - dIe_dVc * vc - dIe_dVb * vb - dIe_dVe * ve;
+
+  if (!physics2_accumulator_add(context->accumulator, nc, nc, dIc_dVc) ||
+      !physics2_accumulator_add(context->accumulator, nc, nb, dIc_dVb) ||
+      !physics2_accumulator_add(context->accumulator, nc, ne, dIc_dVe) ||
+      !physics2_accumulator_add(context->accumulator, nb, nc, dIb_dVc) ||
+      !physics2_accumulator_add(context->accumulator, nb, nb, dIb_dVb) ||
+      !physics2_accumulator_add(context->accumulator, nb, ne, dIb_dVe) ||
+      !physics2_accumulator_add(context->accumulator, ne, nc, dIe_dVc) ||
+      !physics2_accumulator_add(context->accumulator, ne, nb, dIe_dVb) ||
+      !physics2_accumulator_add(context->accumulator, ne, ne, dIe_dVe))
+    return false;
+
+  if (!physics2_accumulator_add_rhs(context->accumulator, nc, -ieq_c) ||
+      !physics2_accumulator_add_rhs(context->accumulator, nb, -ieq_b) ||
+      !physics2_accumulator_add_rhs(context->accumulator, ne, -ieq_e))
+    return false;
+
+  return true;
+}
+
+/* Level-1 NMOS constitutive + Jacobian in (Vgs, Vds). Ig=0, Is=−Id. */
+static void mos_nmos_id(double vgs, double vds, double vth, double k,
+                        double lambda, double *id, double *dId_dVgs,
+                        double *dId_dVds) {
+  double vov = vgs - vth;
+  *id = 0.0;
+  *dId_dVgs = 0.0;
+  *dId_dVds = 0.0;
+  if (!(vov > 0.0))
+    return;
+  if (vds < 0.0) {
+    /* Reverse: evaluate with swapped DS, negate Id. */
+    double id_r, g_gs, g_ds;
+    mos_nmos_id(vgs, -vds, vth, k, lambda, &id_r, &g_gs, &g_ds);
+    *id = -id_r;
+    *dId_dVgs = -g_gs;
+    *dId_dVds = g_ds; /* ∂(−id_r)/∂vds = −(∂id_r/∂(−vds))*(−1) = ∂id_r/∂vds_r */
+    return;
+  }
+  if (vds < vov) {
+    *id = k * (vov * vds - 0.5 * vds * vds);
+    *dId_dVgs = k * vds;
+    *dId_dVds = k * (vov - vds);
+  } else {
+    *id = 0.5 * k * vov * vov * (1.0 + lambda * vds);
+    *dId_dVgs = k * vov * (1.0 + lambda * vds);
+    *dId_dVds = 0.5 * k * vov * vov * lambda;
+  }
+}
+
+static bool mos_level1_stamp(const PhysicsPrimitive *primitive,
+                             PhysicsExecutionContext *context,
+                             const NodeId *terminals, int pmos) {
+  NodeId nd, ng, ns;
+  double vd, vg, vs;
+  double vgs, vds, vth, k, lambda, id;
+  double dId_dVgs, dId_dVds;
+  double dId_dVd, dId_dVg, dId_dVs;
+  double dIs_dVd, dIs_dVg, dIs_dVs;
+  double ieq_d, ieq_s;
+  double scale;
+
+  if (!primitive || !context || !context->accumulator || !terminals)
+    return false;
+
+  nd = terminals[0];
+  ng = terminals[1];
+  ns = terminals[2];
+  if (nd == PHYSICS2_NODE_NONE || ng == PHYSICS2_NODE_NONE ||
+      ns == PHYSICS2_NODE_NONE)
+    return false;
+
+  vth = primitive->payload.transistor.vth;
+  k = primitive->payload.transistor.k;
+  lambda = primitive->payload.transistor.lambda;
+  scale = primitive->payload.transistor.scale.nominal;
+  if (!(vth > 0.0) || !(k > 0.0) || !(lambda >= 0.0) || !(scale > 0.0))
+    return false;
+  k *= scale;
+
+  vd = vg = vs = 0.0;
+  if (context->solution && context->solution_size > 0) {
+    if (nd >= context->solution_size || ng >= context->solution_size ||
+        ns >= context->solution_size)
+      return false;
+    vd = context->solution[nd];
+    vg = context->solution[ng];
+    vs = context->solution[ns];
+  }
+
+  if (pmos) {
+    /* Map PMOS → NMOS-equivalent polarity: negate all node voltages. */
+    vgs = (-vg) - (-vs);
+    vds = (-vd) - (-vs);
+  } else {
+    vgs = vg - vs;
+    vds = vd - vs;
+  }
+
+  mos_nmos_id(vgs, vds, vth, k, lambda, &id, &dId_dVgs, &dId_dVds);
+
+  /* ∂/∂ physical voltages. For PMOS, v_n = −v_p ⇒ ∂f/∂v_p = ∂f/∂v_n * (−1),
+   * and Id_p = −id_n ⇒ overall G matches ∂id_n/∂v_n; Id flips. */
+  if (pmos)
+    id = -id;
+
+  dId_dVd = dId_dVds;
+  dId_dVg = dId_dVgs;
+  dId_dVs = -dId_dVgs - dId_dVds;
+  dIs_dVd = -dId_dVd;
+  dIs_dVg = -dId_dVg;
+  dIs_dVs = -dId_dVs;
+
+  ieq_d = id - dId_dVd * vd - dId_dVg * vg - dId_dVs * vs;
+  ieq_s = (-id) - dIs_dVd * vd - dIs_dVg * vg - dIs_dVs * vs;
+
+  if (!physics2_accumulator_add(context->accumulator, nd, nd, dId_dVd) ||
+      !physics2_accumulator_add(context->accumulator, nd, ng, dId_dVg) ||
+      !physics2_accumulator_add(context->accumulator, nd, ns, dId_dVs) ||
+      !physics2_accumulator_add(context->accumulator, ns, nd, dIs_dVd) ||
+      !physics2_accumulator_add(context->accumulator, ns, ng, dIs_dVg) ||
+      !physics2_accumulator_add(context->accumulator, ns, ns, dIs_dVs))
+    return false;
+
+  if (!physics2_accumulator_add_rhs(context->accumulator, nd, -ieq_d) ||
+      !physics2_accumulator_add_rhs(context->accumulator, ns, -ieq_s))
+    return false;
+
+  return true;
+}
 
 static bool transistor_stamp(const PhysicsPrimitive *primitive,
                              PhysicsExecutionContext *context,
                              const NodeId *terminals, uint8_t terminal_count,
                              BranchId branch) {
-  (void)primitive;
-  (void)context;
-  (void)terminals;
-  (void)terminal_count;
   (void)branch;
 
-  /*
-   * Missing runtime capability: residual/Jacobian (or equivalent)
-   * and Newton ownership outside the primitive.
-   */
+  if (!primitive || terminal_count != 3)
+    return false;
+
+  if (primitive->payload.transistor.subtype == PHYS_XSTR_BJT)
+    return bjt_ebers_moll_stamp(primitive, context, terminals);
+
+  if (primitive->payload.transistor.subtype == PHYS_XSTR_NMOS)
+    return mos_level1_stamp(primitive, context, terminals, 0);
+
+  if (primitive->payload.transistor.subtype == PHYS_XSTR_PMOS)
+    return mos_level1_stamp(primitive, context, terminals, 1);
+
   return false;
 }
 
@@ -1488,72 +2124,460 @@ static void transistor_print(const PhysicsPrimitive *primitive, FILE *stream) {
 
   switch (primitive->payload.transistor.subtype) {
   case PHYS_XSTR_BJT:
-    subtype = "BJT";
+    subtype = "BJT(ebers_moll)";
     break;
   case PHYS_XSTR_NMOS:
-    subtype = "NMOS";
+    subtype = "NMOS(level1)";
     break;
   case PHYS_XSTR_PMOS:
-    subtype = "PMOS";
+    subtype = "PMOS(level1)";
     break;
   default:
     subtype = "UNKNOWN";
     break;
   }
 
-  fprintf(stream,
-          "Primitive %s: TRANSISTOR %s scale=%.12g +/- %.6g%% "
-          "[nonlinear stamp unsupported]\n",
-          primitive->name, subtype,
-          primitive->payload.transistor.scale.nominal,
-          primitive->payload.transistor.scale.tolerance_pct);
+  if (primitive->payload.transistor.subtype == PHYS_XSTR_BJT) {
+    fprintf(stream,
+            "Primitive %s: %s Is=%.4g αF=%.4g αR=%.4g Vt=%.4g scale=%.4g\n",
+            primitive->name, subtype, primitive->payload.transistor.isat,
+            primitive->payload.transistor.alpha_f,
+            primitive->payload.transistor.alpha_r,
+            primitive->payload.transistor.vt,
+            primitive->payload.transistor.scale.nominal);
+  } else if (primitive->payload.transistor.subtype == PHYS_XSTR_NMOS ||
+             primitive->payload.transistor.subtype == PHYS_XSTR_PMOS) {
+    fprintf(stream,
+            "Primitive %s: %s Vth=%.4g K=%.4g λ=%.4g scale=%.4g\n",
+            primitive->name, subtype, primitive->payload.transistor.vth,
+            primitive->payload.transistor.k,
+            primitive->payload.transistor.lambda,
+            primitive->payload.transistor.scale.nominal);
+  } else {
+    fprintf(stream, "Primitive %s: TRANSISTOR %s [unsupported]\n",
+            primitive->name, subtype);
+  }
 }
 
 static const PhysicsPrimitiveOps transistor_ops = {
     transistor_stamp, transistor_terminal_count, transistor_extra_unknowns,
     transistor_print};
 
-static bool init_transistor(PhysicsPrimitive *primitive, const char *name,
-                            double scale, double tolerance_pct,
-                            PhysicsTransistorSubtype subtype) {
+static bool init_transistor_mos(PhysicsPrimitive *primitive, const char *name,
+                                double vth_v, double k_a_per_v2,
+                                double lambda_per_v, double scale,
+                                double tolerance_pct,
+                                PhysicsTransistorSubtype subtype) {
   if (!primitive || !name)
     return false;
-
+  if (!isfinite(vth_v) || vth_v <= 0.0)
+    return false;
+  if (!isfinite(k_a_per_v2) || k_a_per_v2 <= 0.0)
+    return false;
+  if (!isfinite(lambda_per_v) || lambda_per_v < 0.0)
+    return false;
   if (!isfinite(scale) || scale <= 0.0)
     return false;
-
   if (!isfinite(tolerance_pct) || tolerance_pct < 0.0)
     return false;
 
   memset(primitive, 0, sizeof(*primitive));
-
   primitive->ops = &transistor_ops;
   primitive->kind = PHYS_PRIM_TRANSISTOR;
-
   strncpy(primitive->name, name, sizeof(primitive->name) - 1);
   primitive->name[sizeof(primitive->name) - 1] = '\0';
-
   primitive->payload.transistor.subtype = subtype;
   primitive->payload.transistor.scale.nominal = scale;
   primitive->payload.transistor.scale.tolerance_pct = tolerance_pct;
   primitive->payload.transistor.terminal_count = 3;
-
+  primitive->payload.transistor.vth = vth_v;
+  primitive->payload.transistor.k = k_a_per_v2;
+  primitive->payload.transistor.lambda = lambda_per_v;
   return true;
 }
 
 bool physics2_primitive_init_bjt(PhysicsPrimitive *primitive, const char *name,
-                                 double scale, double tolerance_pct) {
-  return init_transistor(primitive, name, scale, tolerance_pct, PHYS_XSTR_BJT);
+                                 double isat_a, double alpha_f, double alpha_r,
+                                 double vt_v, double tolerance_pct) {
+  if (!primitive || !name)
+    return false;
+  if (!isfinite(isat_a) || isat_a <= 0.0)
+    return false;
+  if (!isfinite(alpha_f) || alpha_f <= 0.0 || alpha_f >= 1.0)
+    return false;
+  if (!isfinite(alpha_r) || alpha_r <= 0.0 || alpha_r >= 1.0)
+    return false;
+  if (!isfinite(vt_v) || vt_v <= 0.0)
+    return false;
+  if (!isfinite(tolerance_pct) || tolerance_pct < 0.0)
+    return false;
+
+  memset(primitive, 0, sizeof(*primitive));
+  primitive->ops = &transistor_ops;
+  primitive->kind = PHYS_PRIM_TRANSISTOR;
+  strncpy(primitive->name, name, sizeof(primitive->name) - 1);
+  primitive->name[sizeof(primitive->name) - 1] = '\0';
+  primitive->payload.transistor.subtype = PHYS_XSTR_BJT;
+  primitive->payload.transistor.scale.nominal = 1.0;
+  primitive->payload.transistor.scale.tolerance_pct = tolerance_pct;
+  primitive->payload.transistor.terminal_count = 3;
+  primitive->payload.transistor.isat = isat_a;
+  primitive->payload.transistor.alpha_f = alpha_f;
+  primitive->payload.transistor.alpha_r = alpha_r;
+  primitive->payload.transistor.vt = vt_v;
+  return true;
 }
 
 bool physics2_primitive_init_nmos(PhysicsPrimitive *primitive, const char *name,
-                                  double scale, double tolerance_pct) {
-  return init_transistor(primitive, name, scale, tolerance_pct, PHYS_XSTR_NMOS);
+                                  double vth_v, double k_a_per_v2,
+                                  double lambda_per_v, double scale,
+                                  double tolerance_pct) {
+  return init_transistor_mos(primitive, name, vth_v, k_a_per_v2, lambda_per_v,
+                             scale, tolerance_pct, PHYS_XSTR_NMOS);
 }
 
 bool physics2_primitive_init_pmos(PhysicsPrimitive *primitive, const char *name,
-                                  double scale, double tolerance_pct) {
-  return init_transistor(primitive, name, scale, tolerance_pct, PHYS_XSTR_PMOS);
+                                  double vth_v, double k_a_per_v2,
+                                  double lambda_per_v, double scale,
+                                  double tolerance_pct) {
+  return init_transistor_mos(primitive, name, vth_v, k_a_per_v2, lambda_per_v,
+                             scale, tolerance_pct, PHYS_XSTR_PMOS);
+}
+
+/* =========================================================
+ * Phase 12: SWITCH / OPAMP / LDO / BATTERY
+ * ========================================================= */
+
+static bool switch_stamp(const PhysicsPrimitive *primitive,
+                         PhysicsExecutionContext *context,
+                         const NodeId *terminals, uint8_t terminal_count,
+                         BranchId branch) {
+  NodeId a, b;
+  double r, g;
+  (void)branch;
+  if (!primitive || !context || !terminals || terminal_count != 2)
+    return false;
+  a = terminals[0];
+  b = terminals[1];
+  if (a == PHYSICS2_NODE_NONE || b == PHYSICS2_NODE_NONE)
+    return false;
+  r = primitive->payload.sw.on ? primitive->payload.sw.ron
+                               : primitive->payload.sw.roff;
+  if (!(r > 0.0) || !isfinite(r))
+    return false;
+  g = 1.0 / r;
+  return physics2_accumulator_add(context->accumulator, a, a, g) &&
+         physics2_accumulator_add(context->accumulator, a, b, -g) &&
+         physics2_accumulator_add(context->accumulator, b, a, -g) &&
+         physics2_accumulator_add(context->accumulator, b, b, g);
+}
+
+static uint8_t switch_terminal_count(const PhysicsPrimitive *primitive) {
+  (void)primitive;
+  return 2;
+}
+
+static uint8_t switch_extra_unknowns(const PhysicsPrimitive *primitive) {
+  (void)primitive;
+  return 0;
+}
+
+static void switch_print(const PhysicsPrimitive *primitive, FILE *stream) {
+  if (!primitive || !stream)
+    return;
+  fprintf(stream, "Primitive %s: SWITCH %s Ron=%.4g Roff=%.4g\n",
+          primitive->name, primitive->payload.sw.on ? "ON" : "OFF",
+          primitive->payload.sw.ron, primitive->payload.sw.roff);
+}
+
+static const PhysicsPrimitiveOps switch_ops = {
+    switch_stamp, switch_terminal_count, switch_extra_unknowns, switch_print};
+
+static bool opamp_stamp(const PhysicsPrimitive *primitive,
+                        PhysicsExecutionContext *context,
+                        const NodeId *terminals, uint8_t terminal_count,
+                        BranchId branch) {
+  /* Same MNA as VCVS: out = A*(in+ - in-). */
+  PhysicsPrimitive tmp;
+  if (!primitive)
+    return false;
+  tmp = *primitive;
+  tmp.payload.controlled_source.gain.nominal = primitive->payload.opamp.gain;
+  tmp.payload.controlled_source.gain.tolerance_pct = 0.0;
+  return vcvs_stamp(&tmp, context, terminals, terminal_count, branch);
+}
+
+static uint8_t opamp_terminal_count(const PhysicsPrimitive *primitive) {
+  (void)primitive;
+  return 4;
+}
+
+static uint8_t opamp_extra_unknowns(const PhysicsPrimitive *primitive) {
+  (void)primitive;
+  return 1;
+}
+
+static void opamp_print(const PhysicsPrimitive *primitive, FILE *stream) {
+  if (!primitive || !stream)
+    return;
+  fprintf(stream, "Primitive %s: OPAMP(behavioral) A=%.6g\n", primitive->name,
+          primitive->payload.opamp.gain);
+}
+
+static const PhysicsPrimitiveOps opamp_ops = {
+    opamp_stamp, opamp_terminal_count, opamp_extra_unknowns, opamp_print};
+
+static bool ldo_stamp(const PhysicsPrimitive *primitive,
+                      PhysicsExecutionContext *context, const NodeId *terminals,
+                      uint8_t terminal_count, BranchId branch) {
+  NodeId n_in, n_out, n_gnd;
+  double vin, vout, vgnd, vset, g, rout, vtarget, vdrop, ilimit;
+  double dVset_dVin, i_out, ieq_out, ieq_gnd;
+  double dI_dVin, dI_dVout, dI_dVgnd;
+  (void)branch;
+
+  if (!primitive || !context || !terminals || terminal_count != 3)
+    return false;
+  n_in = terminals[0];
+  n_out = terminals[1];
+  n_gnd = terminals[2];
+  if (n_in == PHYSICS2_NODE_NONE || n_out == PHYSICS2_NODE_NONE ||
+      n_gnd == PHYSICS2_NODE_NONE)
+    return false;
+
+  vtarget = primitive->payload.ldo.vtarget;
+  vdrop = primitive->payload.ldo.vdropout;
+  rout = primitive->payload.ldo.rout;
+  ilimit = primitive->payload.ldo.ilimit;
+  if (!(vtarget > 0.0) || !(vdrop >= 0.0) || !(rout > 0.0))
+    return false;
+  g = 1.0 / rout;
+
+  vin = vout = vgnd = 0.0;
+  if (context->solution && context->solution_size > 0) {
+    if (n_in >= context->solution_size || n_out >= context->solution_size ||
+        n_gnd >= context->solution_size)
+      return false;
+    vin = context->solution[n_in];
+    vout = context->solution[n_out];
+    vgnd = context->solution[n_gnd];
+  }
+
+  /* Vset = min(Vtarget, (Vin-Vgnd) - Vdropout); floor at 0 */
+  {
+    double head = (vin - vgnd) - vdrop;
+    if (head >= vtarget) {
+      vset = vtarget;
+      dVset_dVin = 0.0;
+    } else {
+      vset = head;
+      dVset_dVin = 1.0;
+    }
+    if (vset < 0.0) {
+      vset = 0.0;
+      dVset_dVin = 0.0;
+    }
+  }
+
+  /* I into OUT = Vset*g - (Vout-Vgnd)*g ; optional Ilimit clamp */
+  i_out = vset * g - (vout - vgnd) * g;
+  if (ilimit > 0.0 && i_out > ilimit) {
+    /* Current-source mode: fixed Ilimit out of LDO (into load). */
+    i_out = ilimit;
+    dI_dVin = 0.0;
+    dI_dVout = 0.0;
+    dI_dVgnd = 0.0;
+    ieq_out = i_out;
+    ieq_gnd = -i_out;
+  } else {
+    /* Vset = a*Vin + b*Vgnd + c; regulation: a=0,b=0; dropout: a=1,b=-1 */
+    dI_dVin = dVset_dVin * g;
+    dI_dVout = -g;
+    if (dVset_dVin > 0.5) {
+      /* dropout: Vset=Vin-Vgnd-Vd → I = (Vin-Vd)/R - Vout/R  (Vgnd cancels) */
+      dI_dVgnd = 0.0;
+    } else {
+      dI_dVgnd = g; /* regulation: ∂/∂Vgnd of -(Vout-Vgnd)*g */
+    }
+    ieq_out = i_out - dI_dVin * vin - dI_dVout * vout - dI_dVgnd * vgnd;
+    ieq_gnd = -i_out - (-dI_dVin) * vin - (-dI_dVout) * vout -
+              (-dI_dVgnd) * vgnd;
+  }
+
+  if (ilimit > 0.0 && i_out >= ilimit) {
+    if (!physics2_accumulator_add_rhs(context->accumulator, n_out, -ieq_out) ||
+        !physics2_accumulator_add_rhs(context->accumulator, n_gnd, -ieq_gnd))
+      return false;
+    return true;
+  }
+
+  if (!physics2_accumulator_add(context->accumulator, n_out, n_in, dI_dVin) ||
+      !physics2_accumulator_add(context->accumulator, n_out, n_out, dI_dVout) ||
+      !physics2_accumulator_add(context->accumulator, n_out, n_gnd, dI_dVgnd) ||
+      !physics2_accumulator_add(context->accumulator, n_gnd, n_in, -dI_dVin) ||
+      !physics2_accumulator_add(context->accumulator, n_gnd, n_out,
+                                -dI_dVout) ||
+      !physics2_accumulator_add(context->accumulator, n_gnd, n_gnd, -dI_dVgnd))
+    return false;
+
+  if (!physics2_accumulator_add_rhs(context->accumulator, n_out, -ieq_out) ||
+      !physics2_accumulator_add_rhs(context->accumulator, n_gnd, -ieq_gnd))
+    return false;
+
+  return true;
+}
+
+static uint8_t ldo_terminal_count(const PhysicsPrimitive *primitive) {
+  (void)primitive;
+  return 3;
+}
+
+static uint8_t ldo_extra_unknowns(const PhysicsPrimitive *primitive) {
+  (void)primitive;
+  return 0;
+}
+
+static void ldo_print(const PhysicsPrimitive *primitive, FILE *stream) {
+  if (!primitive || !stream)
+    return;
+  fprintf(stream,
+          "Primitive %s: LDO(behavioral_lumped) Vtarget=%.4g Vdo=%.4g "
+          "Rout=%.4g Ilim=%.4g\n",
+          primitive->name, primitive->payload.ldo.vtarget,
+          primitive->payload.ldo.vdropout, primitive->payload.ldo.rout,
+          primitive->payload.ldo.ilimit);
+}
+
+static const PhysicsPrimitiveOps ldo_ops = {ldo_stamp, ldo_terminal_count,
+                                            ldo_extra_unknowns, ldo_print};
+
+static bool battery_stamp(const PhysicsPrimitive *primitive,
+                          PhysicsExecutionContext *context,
+                          const NodeId *terminals, uint8_t terminal_count,
+                          BranchId branch) {
+  NodeId np, nn;
+  double voc, r, g;
+  (void)branch;
+  if (!primitive || !context || !terminals || terminal_count != 2)
+    return false;
+  np = terminals[0];
+  nn = terminals[1];
+  if (np == PHYSICS2_NODE_NONE || nn == PHYSICS2_NODE_NONE)
+    return false;
+  voc = primitive->payload.battery.voc;
+  r = primitive->payload.battery.rint;
+  if (!(r > 0.0) || !isfinite(voc) || !isfinite(r))
+    return false;
+  g = 1.0 / r;
+  /* Thevenin: G between +/- plus I = Voc*G from − into + */
+  if (!physics2_accumulator_add(context->accumulator, np, np, g) ||
+      !physics2_accumulator_add(context->accumulator, np, nn, -g) ||
+      !physics2_accumulator_add(context->accumulator, nn, np, -g) ||
+      !physics2_accumulator_add(context->accumulator, nn, nn, g))
+    return false;
+  if (!physics2_accumulator_add_rhs(context->accumulator, np, voc * g) ||
+      !physics2_accumulator_add_rhs(context->accumulator, nn, -voc * g))
+    return false;
+  return true;
+}
+
+static uint8_t battery_terminal_count(const PhysicsPrimitive *primitive) {
+  (void)primitive;
+  return 2;
+}
+
+static uint8_t battery_extra_unknowns(const PhysicsPrimitive *primitive) {
+  (void)primitive;
+  return 0;
+}
+
+static void battery_print(const PhysicsPrimitive *primitive, FILE *stream) {
+  if (!primitive || !stream)
+    return;
+  fprintf(stream, "Primitive %s: BATTERY Voc=%.4g Rint=%.4g\n", primitive->name,
+          primitive->payload.battery.voc, primitive->payload.battery.rint);
+}
+
+static const PhysicsPrimitiveOps battery_ops = {
+    battery_stamp, battery_terminal_count, battery_extra_unknowns,
+    battery_print};
+
+bool physics2_primitive_init_switch(PhysicsPrimitive *primitive, const char *name,
+                                    double ron_ohm, double roff_ohm, int on) {
+  if (!primitive || !name)
+    return false;
+  if (!isfinite(ron_ohm) || ron_ohm <= 0.0)
+    return false;
+  if (!isfinite(roff_ohm) || roff_ohm <= 0.0)
+    return false;
+  memset(primitive, 0, sizeof(*primitive));
+  primitive->ops = &switch_ops;
+  primitive->kind = PHYS_PRIM_SWITCH;
+  strncpy(primitive->name, name, sizeof(primitive->name) - 1);
+  primitive->name[sizeof(primitive->name) - 1] = '\0';
+  primitive->payload.sw.ron = ron_ohm;
+  primitive->payload.sw.roff = roff_ohm;
+  primitive->payload.sw.on = on ? 1 : 0;
+  return true;
+}
+
+bool physics2_primitive_init_opamp(PhysicsPrimitive *primitive, const char *name,
+                                   double gain) {
+  if (!primitive || !name)
+    return false;
+  if (!isfinite(gain) || gain == 0.0)
+    return false;
+  memset(primitive, 0, sizeof(*primitive));
+  primitive->ops = &opamp_ops;
+  primitive->kind = PHYS_PRIM_OPAMP;
+  strncpy(primitive->name, name, sizeof(primitive->name) - 1);
+  primitive->name[sizeof(primitive->name) - 1] = '\0';
+  primitive->payload.opamp.gain = gain;
+  return true;
+}
+
+bool physics2_primitive_init_ldo(PhysicsPrimitive *primitive, const char *name,
+                                 double vtarget, double vdropout, double rout,
+                                 double ilimit) {
+  if (!primitive || !name)
+    return false;
+  if (!isfinite(vtarget) || vtarget <= 0.0)
+    return false;
+  if (!isfinite(vdropout) || vdropout < 0.0)
+    return false;
+  if (!isfinite(rout) || rout <= 0.0)
+    return false;
+  if (!isfinite(ilimit) || ilimit < 0.0)
+    return false;
+  memset(primitive, 0, sizeof(*primitive));
+  primitive->ops = &ldo_ops;
+  primitive->kind = PHYS_PRIM_LDO;
+  strncpy(primitive->name, name, sizeof(primitive->name) - 1);
+  primitive->name[sizeof(primitive->name) - 1] = '\0';
+  primitive->payload.ldo.vtarget = vtarget;
+  primitive->payload.ldo.vdropout = vdropout;
+  primitive->payload.ldo.rout = rout;
+  primitive->payload.ldo.ilimit = ilimit;
+  return true;
+}
+
+bool physics2_primitive_init_battery(PhysicsPrimitive *primitive,
+                                     const char *name, double voc,
+                                     double rint_ohm) {
+  if (!primitive || !name)
+    return false;
+  if (!isfinite(voc))
+    return false;
+  if (!isfinite(rint_ohm) || rint_ohm <= 0.0)
+    return false;
+  memset(primitive, 0, sizeof(*primitive));
+  primitive->ops = &battery_ops;
+  primitive->kind = PHYS_PRIM_BATTERY;
+  strncpy(primitive->name, name, sizeof(primitive->name) - 1);
+  primitive->name[sizeof(primitive->name) - 1] = '\0';
+  primitive->payload.battery.voc = voc;
+  primitive->payload.battery.rint = rint_ohm;
+  return true;
 }
 
 /* =========================================================
@@ -1597,6 +2621,18 @@ static PhysicsOpcode physics_opcode_from_kind(PhysicsPrimitiveKind kind) {
 
   case PHYS_PRIM_LOGIC_GATE:
     return PHYS_OP_LOGIC_GATE;
+
+  case PHYS_PRIM_SWITCH:
+    return PHYS_OP_SWITCH;
+
+  case PHYS_PRIM_OPAMP:
+    return PHYS_OP_OPAMP;
+
+  case PHYS_PRIM_LDO:
+    return PHYS_OP_LDO;
+
+  case PHYS_PRIM_BATTERY:
+    return PHYS_OP_BATTERY;
 
   case PHYS_PRIM_NONE:
   default:
@@ -1689,9 +2725,11 @@ PrimitiveId physics2_program_add_primitive(PhysicsProgram *program,
   if (unknowns > 0) {
     switch (primitive->kind) {
     case PHYS_PRIM_VSOURCE:
+    case PHYS_PRIM_INDUCTOR: /* DC short / BE branch current I_L */
     case PHYS_PRIM_VCVS:
     case PHYS_PRIM_CCVS:
     case PHYS_PRIM_CCCS:
+    case PHYS_PRIM_OPAMP:
       break;
     default:
       return PHYSICS_PRIMITIVE_NONE;
@@ -1839,7 +2877,8 @@ bool physics2_context_init(PhysicsExecutionContext *context,
   if (!context || !program || !accumulator)
     return false;
 
-  if (timestep <= 0.0 || !isfinite(timestep))
+  /* timestep == 0 → DC operating point (C open, L short). */
+  if (timestep < 0.0 || !isfinite(timestep))
     return false;
 
   total_unknowns = program->next_node + program->branch_count;
@@ -1867,6 +2906,14 @@ bool physics2_context_init(PhysicsExecutionContext *context,
 
   context->state_count = program->instruction_count;
   context->solution_size = total_unknowns;
+
+  context->newton_max_iter = 100;
+  context->newton_abs_tol = 1.0e-9;
+  context->newton_rel_tol = 1.0e-6;
+  context->newton_max_dv = 0.25;
+  context->quiet = 0;
+  memset(&context->newton, 0, sizeof(context->newton));
+  context->newton.status = PHYSICS2_NEWTON_LINEAR;
 
   return true;
 
@@ -1906,6 +2953,21 @@ void physics2_context_reset(PhysicsExecutionContext *context) {
   physics2_accumulator_clear(context->accumulator);
 }
 
+void physics2_context_set_newton_limits(PhysicsExecutionContext *context,
+                                        size_t max_iter, double abs_tol,
+                                        double rel_tol, double max_dv) {
+  if (!context)
+    return;
+  if (max_iter > 0)
+    context->newton_max_iter = max_iter;
+  if (isfinite(abs_tol) && abs_tol > 0.0)
+    context->newton_abs_tol = abs_tol;
+  if (isfinite(rel_tol) && rel_tol > 0.0)
+    context->newton_rel_tol = rel_tol;
+  if (isfinite(max_dv) && max_dv > 0.0)
+    context->newton_max_dv = max_dv;
+}
+
 bool physics2_interpreter_execute(PhysicsInterpreter *interpreter) {
   size_t i;
 
@@ -1923,7 +2985,7 @@ bool physics2_interpreter_execute(PhysicsInterpreter *interpreter) {
     if (!primitive || !primitive->ops)
       return false;
 
-    if (primitive->ops->print)
+    if (primitive->ops->print && !interpreter->context->quiet)
       primitive->ops->print(primitive, stdout);
 
     if (primitive->ops->stamp) {
@@ -1943,70 +3005,190 @@ bool physics2_context_step(PhysicsExecutionContext *context,
   PhysicsInterpreter interpreter;
   size_t i;
   size_t iter;
-  int has_diode = 0;
-  double *x_new = NULL;
-  const size_t max_newton = 100;
-  const double abs_tol = 1.0e-9;
-  const double max_dv = 0.25;
+  int has_nonlinear = 0;
+  double *x_trial = NULL;
+  double *x_cand = NULL;
+  PhysicsPrimitiveState *snap_states = NULL;
+  double *snap_solution = NULL;
+  double snap_time = 0.0;
+  int transactional = 0;
 
   if (!context || !context->program || !context->accumulator ||
       !context->solution)
     return false;
 
+  /* BE transaction: snapshot; commit C/L history + time only on success. */
+  if (context->timestep > 0.0) {
+    transactional = 1;
+    snap_time = context->time;
+    if (context->state_count > 0) {
+      snap_states = malloc(context->state_count * sizeof(*snap_states));
+      if (!snap_states)
+        return false;
+      memcpy(snap_states, context->states,
+             context->state_count * sizeof(*snap_states));
+    }
+    if (context->solution_size > 0) {
+      snap_solution = malloc(context->solution_size * sizeof(*snap_solution));
+      if (!snap_solution) {
+        free(snap_states);
+        return false;
+      }
+      memcpy(snap_solution, context->solution,
+             context->solution_size * sizeof(*snap_solution));
+    }
+  }
+
+  memset(&context->newton, 0, sizeof(context->newton));
+  context->newton.status = PHYSICS2_NEWTON_LINEAR;
+  context->newton.damping = 1.0;
+
   for (i = 0; i < context->program->instruction_count; i++) {
     PhysicsPrimitive *p = physics2_registry_get(
         &context->program->primitives,
         context->program->instructions[i].primitive_id);
-    if (p && p->kind == PHYS_PRIM_DIODE)
-      has_diode = 1;
+    if (p && (p->kind == PHYS_PRIM_DIODE || p->kind == PHYS_PRIM_LDO ||
+              (p->kind == PHYS_PRIM_TRANSISTOR &&
+               (p->payload.transistor.subtype == PHYS_XSTR_BJT ||
+                p->payload.transistor.subtype == PHYS_XSTR_NMOS ||
+                p->payload.transistor.subtype == PHYS_XSTR_PMOS))))
+      has_nonlinear = 1;
   }
 
   interpreter.program = context->program;
   interpreter.context = context;
 
-  if (!has_diode) {
+  if (!has_nonlinear) {
     if (!physics2_interpreter_execute(&interpreter))
-      return false;
+      goto step_fail;
     if (!physics2_accumulator_solve(context->accumulator, reference_node,
-                                    context->solution))
-      return false;
+                                    context->solution)) {
+      context->newton.status = PHYSICS2_NEWTON_SINGULAR;
+      snprintf(context->newton.failure, sizeof(context->newton.failure),
+               "MATRIX_SINGULAR");
+      goto step_fail;
+    }
+    for (i = 0; i < context->solution_size; i++) {
+      if (!isfinite(context->solution[i])) {
+        context->newton.status = PHYSICS2_NEWTON_NONFINITE;
+        snprintf(context->newton.failure, sizeof(context->newton.failure),
+                 "NONFINITE_SOLUTION");
+        goto step_fail;
+      }
+    }
+    context->newton.status = PHYSICS2_NEWTON_LINEAR;
   } else {
-    /* Global Newton: devices stamp linearized companion; runtime owns iteration. */
-    x_new = calloc(context->solution_size, sizeof(*x_new));
-    if (context->solution_size > 0 && !x_new)
-      return false;
+    /* Global Newton: devices stamp companions; runtime owns J Δx = -F, damping. */
+    const size_t max_newton =
+        context->newton_max_iter > 0 ? context->newton_max_iter : 100;
+    const double abs_tol =
+        context->newton_abs_tol > 0.0 ? context->newton_abs_tol : 1.0e-9;
+    const double rel_tol =
+        context->newton_rel_tol > 0.0 ? context->newton_rel_tol : 1.0e-6;
+    const double max_dv =
+        context->newton_max_dv > 0.0 ? context->newton_max_dv : 0.25;
+
+    x_trial = calloc(context->solution_size, sizeof(*x_trial));
+    x_cand = calloc(context->solution_size, sizeof(*x_cand));
+    if (context->solution_size > 0 && (!x_trial || !x_cand))
+      goto newton_fail;
+
+    context->quiet = 1;
 
     for (iter = 0; iter < max_newton; iter++) {
-      double max_step = 0.0;
+      double x_norm = 0.0;
+      double update_norm = 0.0;
+      double alpha;
+      int accepted = 0;
+      size_t k;
 
       if (!physics2_interpreter_execute(&interpreter))
         goto newton_fail;
       if (!physics2_accumulator_solve(context->accumulator, reference_node,
-                                      x_new))
+                                      x_trial)) {
+        context->newton.status = PHYSICS2_NEWTON_SINGULAR;
+        snprintf(context->newton.failure, sizeof(context->newton.failure),
+                 "MATRIX_SINGULAR");
         goto newton_fail;
+      }
 
       for (i = 0; i < context->solution_size; i++) {
-        double d = x_new[i] - context->solution[i];
+        if (!isfinite(x_trial[i])) {
+          context->newton.status = PHYSICS2_NEWTON_NONFINITE;
+          snprintf(context->newton.failure, sizeof(context->newton.failure),
+                   "NONFINITE_TRIAL");
+          goto newton_fail;
+        }
+        if (fabs(context->solution[i]) > x_norm)
+          x_norm = fabs(context->solution[i]);
+      }
+
+      /* Full Newton direction with voltage limiting on the raw step. */
+      for (i = 0; i < context->solution_size; i++) {
+        double d = x_trial[i] - context->solution[i];
         if (d > max_dv)
           d = max_dv;
         if (d < -max_dv)
           d = -max_dv;
-        x_new[i] = context->solution[i] + d;
-        if (fabs(d) > max_step)
-          max_step = fabs(d);
+        x_trial[i] = context->solution[i] + d;
+        if (fabs(d) > update_norm)
+          update_norm = fabs(d);
       }
 
-      memcpy(context->solution, x_new,
-             context->solution_size * sizeof(*context->solution));
+      context->newton.iterations = iter + 1;
+      context->newton.update_norm = update_norm;
 
-      if (max_step < abs_tol)
+      if (update_norm < abs_tol ||
+          update_norm < rel_tol * (1.0 + x_norm)) {
+        memcpy(context->solution, x_trial,
+               context->solution_size * sizeof(*context->solution));
+        context->newton.residual_norm = update_norm;
+        context->newton.damping = 1.0;
+        context->newton.status = PHYSICS2_NEWTON_OK;
+        accepted = 1;
         break;
+      }
+
+      /* Line search: α = 1, 1/2, 1/4, ... accept first finite candidate. */
+      for (alpha = 1.0; alpha >= 1.0 / 64.0; alpha *= 0.5) {
+        for (k = 0; k < context->solution_size; k++) {
+          double d = x_trial[k] - context->solution[k];
+          x_cand[k] = context->solution[k] + alpha * d;
+          if (!isfinite(x_cand[k]))
+            break;
+        }
+        if (k < context->solution_size)
+          continue;
+        memcpy(context->solution, x_cand,
+               context->solution_size * sizeof(*context->solution));
+        context->newton.damping = alpha;
+        context->newton.residual_norm = update_norm * alpha;
+        accepted = 1;
+        break;
+      }
+
+      if (!accepted) {
+        context->newton.status = PHYSICS2_NEWTON_NONFINITE;
+        snprintf(context->newton.failure, sizeof(context->newton.failure),
+                 "DAMPING_FAILED");
+        goto newton_fail;
+      }
     }
 
-    if (iter >= max_newton)
+    context->quiet = 0;
+
+    if (context->newton.status != PHYSICS2_NEWTON_OK) {
+      context->newton.status = PHYSICS2_NEWTON_DIVERGED;
+      snprintf(context->newton.failure, sizeof(context->newton.failure),
+               "NEWTON_DIVERGED iter=%zu update=%.3g",
+               context->newton.iterations, context->newton.update_norm);
       goto newton_fail;
-    free(x_new);
-    x_new = NULL;
+    }
+
+    free(x_trial);
+    free(x_cand);
+    x_trial = NULL;
+    x_cand = NULL;
   }
 
   for (i = 0; i < context->program->instruction_count; i++) {
@@ -2016,49 +3198,64 @@ bool physics2_context_step(PhysicsExecutionContext *context,
         &context->program->primitives, instruction->primitive_id);
 
     if (!primitive)
-      return false;
+      goto step_fail;
 
     if (primitive->kind == PHYS_PRIM_CAPACITOR) {
       NodeId p = instruction->terminals[0];
       NodeId n = instruction->terminals[1];
 
       if (p >= context->solution_size || n >= context->solution_size)
-        return false;
+        goto step_fail;
 
       context->states[i].capacitor_previous_voltage =
           context->solution[p] - context->solution[n];
     }
 
     if (primitive->kind == PHYS_PRIM_INDUCTOR) {
-      NodeId p = instruction->terminals[0];
-      NodeId n = instruction->terminals[1];
-      double inductance;
-      double conductance;
-      double voltage;
+      BranchId br = context->program->instructions[i].branch;
 
-      if (p >= context->solution_size || n >= context->solution_size)
-        return false;
-
-      inductance = primitive->payload.two_terminal.value.nominal;
-
-      if (!isfinite(inductance) || inductance <= 0.0 ||
-          context->timestep <= 0.0)
-        return false;
-
-      conductance = context->timestep / inductance;
-      voltage = context->solution[p] - context->solution[n];
-
-      context->states[i].inductor_previous_current += conductance * voltage;
+      if (br == PHYSICS2_BRANCH_NONE || br >= context->solution_size)
+        goto step_fail;
+      context->states[i].inductor_previous_current = context->solution[br];
     }
   }
 
-  context->time += context->timestep;
+  if (context->timestep > 0.0)
+    context->time += context->timestep;
 
+  free(snap_states);
+  free(snap_solution);
   return true;
 
 newton_fail:
-  free(x_new);
+  context->quiet = 0;
+  free(x_trial);
+  free(x_cand);
+step_fail:
+  if (transactional) {
+    if (snap_states && context->states)
+      memcpy(context->states, snap_states,
+             context->state_count * sizeof(*snap_states));
+    if (snap_solution && context->solution)
+      memcpy(context->solution, snap_solution,
+             context->solution_size * sizeof(*snap_solution));
+    context->time = snap_time;
+  }
+  free(snap_states);
+  free(snap_solution);
   return false;
+}
+
+bool physics2_context_run_steps(PhysicsExecutionContext *context,
+                                NodeId reference_node, size_t n_steps) {
+  size_t s;
+  if (!context || !(context->timestep > 0.0))
+    return false;
+  for (s = 0; s < n_steps; s++) {
+    if (!physics2_context_step(context, reference_node))
+      return false;
+  }
+  return true;
 }
 
 bool physics2_interpreter_init(PhysicsInterpreter *interpreter,

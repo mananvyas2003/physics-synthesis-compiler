@@ -1,0 +1,119 @@
+{
+  "id": "rc_lpf",
+  "family": "ANALOG",
+  "ports": [
+    {
+      "name": "vin",
+      "kind": "signal_in",
+      "electrical": {
+        "voltage": {
+          "min": 0.0,
+          "max": 3.6
+        },
+        "current": {
+          "min": 0.0,
+          "max": 0.01
+        },
+        "impedance_ohms": 1000
+      }
+    },
+    {
+      "name": "vout",
+      "kind": "signal_out",
+      "electrical": {
+        "voltage": {
+          "min": 0.0,
+          "max": 3.6
+        },
+        "current": {
+          "min": 0.0,
+          "max": 0.01
+        },
+        "impedance_ohms": 1000
+      }
+    },
+    {
+      "name": "gnd",
+      "kind": "gnd",
+      "electrical": {
+        "voltage": {
+          "min": 0,
+          "max": 0
+        },
+        "current": {
+          "min": 0.0,
+          "max": 0
+        },
+        "impedance_ohms": 0
+      }
+    }
+  ],
+  "expand": {
+    "parts": [
+      {
+        "mpn": "DEMO-1K-0603-A",
+        "type": "resistor",
+        "value": 1000.0,
+        "package": "0603",
+        "v_rating": 50.0,
+        "power_rating_w": 0.125
+      },
+      {
+        "mpn": "DEMO-100N-0603-A",
+        "type": "capacitor",
+        "value": 1e-07,
+        "package": "0603",
+        "v_rating": 16.0,
+        "power_rating_w": 0.0
+      }
+    ],
+    "components": [
+      {
+        "role": "r",
+        "part_type": "resistor",
+        "quantity": 1,
+        "target_value": 1000,
+        "package": "0603"
+      },
+      {
+        "role": "c",
+        "part_type": "capacitor",
+        "quantity": 1,
+        "target_value": 1e-07,
+        "package": "0603"
+      }
+    ],
+    "nodes": [
+      "VIN",
+      "VOUT",
+      "GND"
+    ],
+    "connections": [
+      {
+        "role": "r",
+        "pin": "1",
+        "node": "VIN"
+      },
+      {
+        "role": "r",
+        "pin": "2",
+        "node": "VOUT"
+      },
+      {
+        "role": "c",
+        "pin": "1",
+        "node": "VOUT"
+      },
+      {
+        "role": "c",
+        "pin": "2",
+        "node": "GND"
+      }
+    ],
+    "port_nets": {
+      "vin": "VIN",
+      "vout": "VOUT",
+      "gnd": "GND"
+    }
+  }
+}

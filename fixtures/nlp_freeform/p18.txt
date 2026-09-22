@@ -1,0 +1,1 @@
+Pull-up 4.7k between 3V3 and SDA.

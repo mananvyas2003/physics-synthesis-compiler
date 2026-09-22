@@ -1,0 +1,3 @@
+g52_switch_on
+state=on
+ok=1

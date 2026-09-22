@@ -1,0 +1,3 @@
+g39_newton_diverge
+status=diverged
+ok=1

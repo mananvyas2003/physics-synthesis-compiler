@@ -4,6 +4,7 @@
 #include "cli.h"
 #include "diag_error.h"
 #include "gemini_schematic.h"
+#include "nlp.h"
 #include "part_lib.h"
 #include "unit_parse.h"
 
@@ -583,7 +584,7 @@ int schematic_provider_from_prompt(const char *prompt_path,
   memset(meta, 0, sizeof(*meta));
   out_ir_path[0] = '\0';
 
-  if (!force_offline && gemini_api_key_present()) {
+  if (!force_offline && (gemini_api_key_present() || gemini_replay_active())) {
     if (prompt_text_override && prompt_text_override[0]) {
       prompt_text = malloc(strlen(prompt_text_override) + 1);
       if (prompt_text)
@@ -610,11 +611,48 @@ int schematic_provider_from_prompt(const char *prompt_path,
     return rc;
   }
 
-  if (!prompt_path) {
+  /* Corpus fixture map: only with --offline-prompt + fixtures/prompts/NNN.txt */
+  if (force_offline && prompt_path) {
+    char num[16];
+    if (prompt_id_from_path(prompt_path, num, sizeof(num)) == 0) {
+      return offline_from_prompt(prompt_path, out_ir_path, out_len, meta);
+    }
+  }
+
+  /* Deterministic offline NLP on arbitrary text */
+  if (prompt_text_override && prompt_text_override[0]) {
+    prompt_text = malloc(strlen(prompt_text_override) + 1);
+    if (prompt_text)
+      memcpy(prompt_text, prompt_text_override,
+             strlen(prompt_text_override) + 1);
+  } else if (prompt_path) {
+    prompt_text = read_all(prompt_path);
+  }
+  if (!prompt_text) {
     snprintf(meta->clarifying_question, sizeof(meta->clarifying_question),
-             "Offline mode needs --prompt fixtures/prompts/NNN.txt "
-             "(or set GEMINI_API_KEY)");
+             "Offline NLP needs --prompt-text or readable --prompt file "
+             "(or --offline-prompt fixtures/prompts/NNN.txt for corpus)");
     return 1;
   }
-  return offline_from_prompt(prompt_path, out_ir_path, out_len, meta);
+  if (!preferred_out_path) {
+    snprintf(meta->clarifying_question, sizeof(meta->clarifying_question),
+             "Offline NLP requires an output IR path");
+    free(prompt_text);
+    return 1;
+  }
+  strncpy(out_ir_path, preferred_out_path, out_len - 1);
+  out_ir_path[out_len - 1] = '\0';
+  rc = nlp_text_to_schematic_ir(prompt_text, out_ir_path,
+                                meta->clarifying_question,
+                                sizeof(meta->clarifying_question));
+  if (rc == 0) {
+    SchematicIrMeta loaded;
+    memset(&loaded, 0, sizeof(loaded));
+    if (schematic_ir_load_and_validate(out_ir_path, &loaded) == 0)
+      strncpy(meta->name, loaded.name, sizeof(meta->name) - 1);
+    else
+      strncpy(meta->name, "nlp", sizeof(meta->name) - 1);
+  }
+  free(prompt_text);
+  return rc;
 }

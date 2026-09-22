@@ -226,6 +226,7 @@ int cmd_generate_design(const char *design_json, const char *out_dir,
   char *snap_path = NULL;
   char *verify_path = NULL;
   char *dfm_path = NULL;
+  char *pcb_path = NULL;
   char topology_name[64];
   DB *db = NULL;
   CompiledSchematic schematic;
@@ -277,9 +278,10 @@ int cmd_generate_design(const char *design_json, const char *out_dir,
   snap_path = cli_join_path(out_dir, "design-snapshot.v1.json");
   verify_path = cli_join_path(out_dir, "verification.v1.json");
   dfm_path = cli_join_path(out_dir, "mfg-dfm.v1.json");
+  pcb_path = cli_join_path(out_dir, "design.kicad_pcb");
 
   if (!db_path || !net_path || !bom_path || !sch_path || !snap_path ||
-      !verify_path || !dfm_path)
+      !verify_path || !dfm_path || !pcb_path)
     goto done;
 
   remove(db_path);
@@ -372,6 +374,7 @@ int cmd_generate_design(const char *design_json, const char *out_dir,
   if (!emit_ki_cad_netlist(net_path, &schematic) ||
       !emit_bom_csv(bom_path, &schematic) ||
       !compiler_write_kicad_sch(sch_path, &schematic) ||
+      !emit_kicad_pcb(pcb_path, &schematic) ||
       !emit_design_snapshot_v1(snap_path, &schematic)) {
     fprintf(stderr, "[GENERATE] emit failed\n");
     goto done;
@@ -385,6 +388,7 @@ int cmd_generate_design(const char *design_json, const char *out_dir,
   printf("[GENERATE] wrote %s\n", net_path);
   printf("[GENERATE] wrote %s\n", bom_path);
   printf("[GENERATE] wrote %s\n", sch_path);
+  printf("[GENERATE] wrote %s\n", pcb_path);
   printf("[GENERATE] wrote %s\n", snap_path);
   printf("[GENERATE] wrote %s\n", verify_path);
   {
@@ -427,6 +431,7 @@ done:
   free(snap_path);
   free(verify_path);
   free(dfm_path);
+  free(pcb_path);
   return rc;
 }
 
@@ -439,6 +444,7 @@ int cmd_generate(int argc, char **argv) {
   const char *catalogue_db = NULL;
   const char *dfm_profile = NULL;
   int compose_gate4 = 0;
+  const char *compose_name = NULL;
   int force_offline_prompt = 0;
   int i;
   char resolved_design[512];
@@ -502,6 +508,17 @@ int cmd_generate(int argc, char **argv) {
     }
     if (strcmp(argv[i], "--compose-gate4") == 0) {
       compose_gate4 = 1;
+      compose_name = "gate4";
+      continue;
+    }
+    if (strcmp(argv[i], "--compose") == 0) {
+      if (i + 1 >= argc) {
+        fprintf(stderr,
+                "Usage: synth generate --compose "
+                "gate4|industrial_sensor|power_tree_12v -o out/\n");
+        return 1;
+      }
+      compose_name = argv[++i];
       continue;
     }
     if (argv[i][0] == '-') {
@@ -517,14 +534,16 @@ int cmd_generate(int argc, char **argv) {
     return 1;
   }
 
-  if (compose_gate4) {
+  if (compose_gate4 || compose_name) {
     char *expanded;
+    const char *scn = compose_name ? compose_name : "gate4";
     memset(&compose, 0, sizeof(compose));
-    if (compose_gate4_scenario(&compose) != 0) {
-      fprintf(stderr, "[GENERATE] Gate4 composition failed\n");
+    if (compose_scenario(scn, &compose) != 0) {
+      fprintf(stderr, "[GENERATE] composition failed for '%s'\n", scn);
       return 1;
     }
-    printf("[GENERATE] Gate4 composition ok blocks=%d\n", compose.block_count);
+    printf("[GENERATE] composition ok scenario=%s blocks=%d\n", scn,
+           compose.block_count);
     if (ensure_dir(out_dir) != 0)
       return 1;
     expanded = cli_join_path(out_dir, "composed_schematic.json");
@@ -558,8 +577,10 @@ int cmd_generate(int argc, char **argv) {
       return 1;
     }
     printf("[GENERATE] prompt IR %s (live=%s)\n", resolved_design,
-           (!force_offline_prompt && gemini_api_key_present()) ? "gemini"
-                                                              : "offline");
+           (!force_offline_prompt && gemini_replay_active())
+               ? "replay"
+               : ((!force_offline_prompt && gemini_api_key_present()) ? "gemini"
+                                                                     : "offline"));
     free(ir_out);
     design_json = resolved_design;
   } else if (spec_path) {

@@ -1,7 +1,7 @@
 # AC / DAE / Sparse — Contracts (implementation deferred)
 
 **Prerequisite:** Physics2 diode Newton (done, g22) stable on live path.  
-**Status:** contracts only — **NOT IMPLEMENTED** as analysis modes.
+**Status:** linear AC **IMPLEMENTED** (`physics2_ac_*`, `physics2_context_step_ac`, g60–g63). Nonlinear small-signal AC and frequency sweep still deferred.
 
 ---
 
@@ -15,27 +15,29 @@ A(j\omega)\, x(j\omega) = b(j\omega)
 |--------|-------------------------|
 | R | Y=1/R |
 | C | Y=jωC |
-| L | Y=1/(jωL) |
+| L | Vp−Vn = jωL·I (branch) |
 | V/I / controlled | same topology as DC, complex coeffs |
 
-**ABI change:** accumulator `double` → `double complex` (or paired re/im) behind opaque API so stamps stay storage-agnostic.
+**ABI:** opaque `PhysicsAcSystem` with paired re/im — stamps call `physics2_ac_add` / `add_rhs` only.
 
-**Nonlinear small-signal:** DC OP → J(x0) → complex AC (separate from large-signal transient).
+**Nonlinear small-signal:** DC OP → J(x0) → complex AC — **NOT YET**.
 
 ---
 
 ## 2. DAE / transient
 
-Current: fixed-step **Backward Euler** for C/L only.
+Current: fixed-step **Backward Euler** for C/L with **transactional commit**.
 
 | Method | Support path |
 |--------|----------------|
-| BE | already |
+| BE | `physics2_context_step` / `run_steps` (g25, g30, g64–g68) |
 | Trapezoidal | companion stamp change + state update |
 | BDF2+ | history vectors in `PhysicsStatePool` |
 | Adaptive Δt / LTE / reject | timestep controller outside stamps |
 
-Need true DC OP for C (open) / L (short) before mixed DAE.
+On Newton/solve failure with `timestep>0`: restore solution, C/L history, and `time` (no commit).
+
+Need true DC OP for C (open) / L (short) before mixed DAE — **done**.
 
 ---
 

@@ -1,0 +1,3 @@
+g68_transient_reject
+rejected=1
+ok=1

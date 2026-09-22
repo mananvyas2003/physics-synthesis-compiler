@@ -1,0 +1,1 @@
+2-resistor 10k/10k voltage divider from VIN to GND with mid node VOUT

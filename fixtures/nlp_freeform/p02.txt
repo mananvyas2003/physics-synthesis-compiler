@@ -1,0 +1,1 @@
+Give me a 10k divider from 5V down to an ADC.

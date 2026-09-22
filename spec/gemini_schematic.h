@@ -12,9 +12,13 @@ extern "C" {
 /* Non-zero if GEMINI_API_KEY (or SYNTH_LLM_API_KEY) is set. */
 int gemini_api_key_present(void);
 
+/* Non-zero if SYNTH_GEMINI_REPLAY points at a cassette directory. */
+int gemini_replay_active(void);
+
 /*
- * Live prompt → schematic-ir.v1 via Gemini generateContent.
- * Writes validated IR to out_ir_path. Max 3 attempts with validator feedback.
+ * Live/replay prompt → schematic-ir.v1.
+ * Replay: SYNTH_GEMINI_REPLAY=<cassette_dir> with http_response.json (no network).
+ * Live: GEMINI_API_KEY + curl generateContent (max retries with validator feedback).
  * Returns 0 on success.
  */
 int gemini_schematic_from_prompt(const char *prompt_text, const char *out_ir_path,

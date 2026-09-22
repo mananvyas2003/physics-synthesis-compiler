@@ -1,0 +1,3 @@
+g38_newton_bad_init
+status=ok
+ok=1

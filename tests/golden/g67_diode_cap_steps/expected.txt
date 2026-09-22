@@ -1,0 +1,2 @@
+g67_diode_cap_steps
+ok=1

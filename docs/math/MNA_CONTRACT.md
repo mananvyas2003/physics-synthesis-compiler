@@ -34,10 +34,12 @@ Ideal V-source: \(V_+ - V_- = V_s\); branch current unknown enters \(+\) node as
 |--------|---------------------------|
 | R | yes (DC path) |
 | Ideal V (injected for VIN/GND) | yes |
-| C / L | BE when stepped; DC verify omits C (open) |
+| C / L | BE when stepped; **DC:** C open / L short (approx G) via PhysDesign→Physics2; capacitors remain in instruction stream |
 | I, controlled sources | stamped in ISA; not yet built from `CompiledSchematic` |
 | Diode | LED analytical **or** Physics2 Newton (g22); stamp companion |
 | BJT / MOS / IC | **fail-closed** (unsupported) |
+
+**Authoritative lowering:** `compiler_schematic_to_phys_design` → `compiler_lower_to_physics2` is the live verify path (2026-09-22 Phase 2). Vendor MNA remains oracle-only.
 
 ---
 

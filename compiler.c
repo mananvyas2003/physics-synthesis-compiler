@@ -60,6 +60,40 @@ static double default_target_for_type(PartTypes type) {
   }
 }
 
+/* Infer rail voltage from topology node names — not a universal 5.0. */
+static double infer_supply_v(const TopologyNodeRow *nodes, int node_count,
+                             const CompiledComponent *cc) {
+  int i;
+  for (i = 0; i < node_count; i++) {
+    const char *n = nodes[i].node_name;
+    if (!n)
+      continue;
+    if (strcmp(n, "5V") == 0 || strcmp(n, "VBUS") == 0)
+      return 5.0;
+    if (strcmp(n, "3V3") == 0)
+      return 3.3;
+    if (strcmp(n, "12V") == 0)
+      return 12.0;
+    if (strcmp(n, "VIN") == 0 || strcmp(n, "VCC") == 0)
+      return 5.0;
+  }
+  if (cc) {
+    int p;
+    for (p = 0; p < cc->pin_count && p < 8; p++) {
+      const char *n = cc->nodes[p];
+      if (strcmp(n, "5V") == 0 || strcmp(n, "VBUS") == 0)
+        return 5.0;
+      if (strcmp(n, "3V3") == 0)
+        return 3.3;
+      if (strcmp(n, "12V") == 0)
+        return 12.0;
+    }
+  }
+  return 0.0; /* unknown — skip fake derating stress */
+}
+
+static DBResult rebind_with_solved_stress(DB *db, CompiledSchematic *out);
+
 static int type_is_bindable(PartTypes type) {
   return type == PART_RESISTOR || type == PART_CAPACITOR ||
          type == PART_INDUCTOR || type == PART_DIODE ||
@@ -148,7 +182,8 @@ static int load_bind_hints(const char *design_json_path, BindHint *hints,
       cJSON *pkg;
       if (count >= max_hints)
         break;
-      role = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "role"));
+      role =
+          cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "role"));
       if (!role)
         continue;
       memset(&hints[count], 0, sizeof(hints[count]));
@@ -224,7 +259,7 @@ DBResult compiler_compile_from_design(DB *db, const char *topology_name,
     BindChoice choice;
     double target;
     const char *package = "0603";
-    double applied_v = 5.0;
+    double applied_v;
     double dissip = 0.0;
     ToleranceClass tol = TOLERANCE_E24;
     const char *req_pins[8];
@@ -233,9 +268,8 @@ DBResult compiler_compile_from_design(DB *db, const char *topology_name,
     const char *type_name = part_lib_type_label(tc->part_type);
 
     if (!type_is_bindable(tc->part_type)) {
-      diag_set_error(
-          "%s components are not currently available (role '%s').",
-          part_lib_type_label(tc->part_type), tc->role_name);
+      diag_set_error("%s components are not currently available (role '%s').",
+                     part_lib_type_label(tc->part_type), tc->role_name);
       compiler_free_schematic(out);
       return DB_ERROR;
     }
@@ -243,9 +277,9 @@ DBResult compiler_compile_from_design(DB *db, const char *topology_name,
     nreq = -1;
     {
       static const char *try_names[] = {
-          "resistor", "capacitor", "inductor", "led", "diode", "transistor",
-          "mosfet", "regulator", "ldo", "opamp", "switch", "battery",
-          "connector", NULL};
+          "resistor",   "capacitor", "inductor",  "led", "diode",
+          "transistor", "mosfet",    "regulator", "ldo", "opamp",
+          "switch",     "battery",   "connector", NULL};
       int t;
       for (t = 0; try_names[t]; t++) {
         const char *candidate[8];
@@ -288,9 +322,12 @@ DBResult compiler_compile_from_design(DB *db, const char *topology_name,
       }
     }
     if (nreq < 0) {
-      req_pins[0] = "1";
-      req_pins[1] = "2";
-      nreq = 2;
+      diag_set_error(
+          "TOPOLOGY_ERROR: component '%s' has no pin contract matching "
+          "connections (fail closed; no silent 1/2 fallback).",
+          tc->role_name);
+      compiler_free_schematic(out);
+      return DB_ERROR;
     }
 
     cc = &out->components[i];
@@ -299,9 +336,8 @@ DBResult compiler_compile_from_design(DB *db, const char *topology_name,
     cc->pin_count = nreq;
 
     for (p = 0; p < nreq; p++) {
-      const TopologyConnectionRow *row =
-          find_connection(connections, connection_count, tc->role_name,
-                          req_pins[p]);
+      const TopologyConnectionRow *row = find_connection(
+          connections, connection_count, tc->role_name, req_pins[p]);
       const char *node;
       if (!row) {
         const PartLibEntry *ent = part_lib_find(type_name);
@@ -322,9 +358,8 @@ DBResult compiler_compile_from_design(DB *db, const char *topology_name,
       }
       node = find_node_name(nodes, node_count, row->node_name);
       if (!node) {
-        diag_set_error(
-            "Component '%s' pin '%s' connects to unknown net '%s'.",
-            tc->role_name, req_pins[p], row->node_name);
+        diag_set_error("Component '%s' pin '%s' connects to unknown net '%s'.",
+                       tc->role_name, req_pins[p], row->node_name);
         compiler_free_schematic(out);
         return DB_ERROR;
       }
@@ -350,7 +385,8 @@ DBResult compiler_compile_from_design(DB *db, const char *topology_name,
       package = hint->package;
     }
 
-    if (tc->part_type == PART_RESISTOR && target > 0.0)
+    applied_v = infer_supply_v(nodes, node_count, cc);
+    if (tc->part_type == PART_RESISTOR && target > 0.0 && applied_v > 0.0)
       dissip = (applied_v * applied_v) / target;
     if (tc->part_type == PART_CAPACITOR || tc->part_type == PART_INDUCTOR ||
         tc->part_type == PART_DIODE || tc->part_type == PART_TRANSISTOR ||
@@ -382,6 +418,12 @@ DBResult compiler_compile_from_design(DB *db, const char *topology_name,
               sizeof(cc->alternate_mpn) - 1);
 
     out->component_count++;
+  }
+
+  /* Phase 15: re-score passives using solved electrical stress. */
+  if (rebind_with_solved_stress(db, out) != DB_OK) {
+    compiler_free_schematic(out);
+    return DB_ERROR;
   }
 
   return DB_OK;
@@ -446,7 +488,7 @@ static const char *kicad_lib_id(PartTypes type) {
 }
 
 static const char *kicad_footprint_for_package(const char *package,
-                                              PartTypes type) {
+                                               PartTypes type) {
   const char *prefix = "Resistor_SMD:R_";
   static char buf[96];
   if (!package)
@@ -479,9 +521,31 @@ static const char *kicad_footprint_for_package(const char *package,
   return "";
 }
 
-static void write_twoterm_library_symbol(FILE *fp, const char *lib_id,
-                                        const char *ref_prefix,
-                                        const char *desc) {
+static void write_library_symbol(FILE *fp, const char *lib_id,
+                                 const char *ref_prefix,
+                                 const char *symbol_prefix, const char *desc,
+                                 const char *const *pin_nums, int pin_count) {
+  static const struct {
+    double x;
+    double y;
+    int rot;
+  } layout[8] = {
+      {0.0, 3.81, 270},  /* 0 top */
+      {0.0, -3.81, 90},  /* 1 bottom */
+      {3.81, 0.0, 180},  /* 2 right */
+      {-3.81, 0.0, 0},   /* 3 left */
+      {3.81, 3.81, 180}, /* 4 */
+      {-3.81, 3.81, 0},  /* 5 */
+      {3.81, -3.81, 180},
+      {-3.81, -3.81, 0},
+  };
+  int p;
+
+  if (!fp || !lib_id || !ref_prefix || !symbol_prefix || !desc || !pin_nums)
+    return;
+  if (pin_count < 1 || pin_count > 8)
+    return;
+
   fprintf(fp,
           "\t\t(symbol \"%s\"\n"
           "\t\t\t(pin_numbers (hide yes))\n"
@@ -502,36 +566,49 @@ static void write_twoterm_library_symbol(FILE *fp, const char *lib_id,
           "\t\t\t(symbol \"%s_0_1\"\n"
           "\t\t\t\t(rectangle (start -1.016 -2.54) (end 1.016 2.54)\n"
           "\t\t\t\t\t(stroke (width 0.254) (type default)) (fill (type none))))\n"
-          "\t\t\t(symbol \"%s_1_1\"\n"
-          "\t\t\t\t(pin passive line (at 0 3.81 270) (length 1.27)\n"
-          "\t\t\t\t\t(name \"~\" (effects (font (size 1.27 1.27))))\n"
-          "\t\t\t\t\t(number \"1\" (effects (font (size 1.27 1.27)))))\n"
-          "\t\t\t\t(pin passive line (at 0 -3.81 90) (length 1.27)\n"
-          "\t\t\t\t\t(name \"~\" (effects (font (size 1.27 1.27))))\n"
-          "\t\t\t\t\t(number \"2\" (effects (font (size 1.27 1.27)))))\n"
-          "\t\t\t(embedded_fonts no)\n"
-          "\t\t)\n",
-          lib_id, ref_prefix, ref_prefix, desc, ref_prefix, ref_prefix);
+          "\t\t\t(symbol \"%s_1_1\"\n",
+          lib_id, ref_prefix, ref_prefix, desc, symbol_prefix, symbol_prefix);
+
+  for (p = 0; p < pin_count; p++) {
+    fprintf(fp,
+            "\t\t\t\t(pin passive line (at %.2f %.2f %d) (length 1.27)\n"
+            "\t\t\t\t\t(name \"~\" (effects (font (size 1.27 1.27))))\n"
+            "\t\t\t\t\t(number \"%s\" (effects (font (size 1.27 1.27)))))\n",
+            layout[p].x, layout[p].y, layout[p].rot, pin_nums[p]);
+  }
+
+  fprintf(fp, "\t\t\t)\n"
+              "\t\t\t(embedded_fonts no)\n"
+              "\t\t)\n");
+}
+
+static void write_twoterm_library_symbol(FILE *fp, const char *lib_id,
+                                         const char *ref_prefix,
+                                         const char *symbol_prefix,
+                                         const char *desc, int pin_count) {
+  const char *pins2[] = {"1", "2"};
+  (void)pin_count;
+  write_library_symbol(fp, lib_id, ref_prefix, symbol_prefix, desc, pins2, 2);
 }
 
 static void write_resistor_library_symbol(FILE *fp) {
-  write_twoterm_library_symbol(fp, "Device:R", "R", "Resistor");
+  write_twoterm_library_symbol(fp, "Device:R", "R", "R", "Resistor", 2);
 }
 
-static void write_placed_resistor(FILE *fp, const CompiledComponent *component,
-                                  double x, double y, const char *uuid,
-                                  const char *pin1_uuid,
-                                  const char *pin2_uuid) {
-  const char *footprint =
-      kicad_footprint_for_package(component->part.package, component->part.type);
+static void write_placed_component(FILE *fp, const CompiledComponent *component,
+                                   double x, double y, const char *uuid,
+                                   const char *const *pin_uuids) {
+  int p;
+  const char *footprint = kicad_footprint_for_package(component->part.package,
+                                                      component->part.type);
   const char *lib_id = kicad_lib_id(component->part.type);
-  const char *desc = component->part.type == PART_CAPACITOR ? "Capacitor"
-                     : component->part.type == PART_INDUCTOR  ? "Inductor"
-                     : component->part.type == PART_DIODE     ? "LED"
+  const char *desc = component->part.type == PART_CAPACITOR    ? "Capacitor"
+                     : component->part.type == PART_INDUCTOR   ? "Inductor"
+                     : component->part.type == PART_DIODE      ? "LED"
                      : component->part.type == PART_TRANSISTOR ? "Transistor"
-                     : component->part.type == PART_IC        ? "IC"
-                     : component->part.type == PART_OTHER     ? "Battery"
-                                                              : "Resistor";
+                     : component->part.type == PART_IC         ? "IC"
+                     : component->part.type == PART_OTHER      ? "Battery"
+                                                               : "Resistor";
 
   fprintf(fp,
           "\t(symbol\n"
@@ -578,9 +655,17 @@ static void write_placed_resistor(FILE *fp, const CompiledComponent *component,
           "\t\t\t\t(font (size 1.27 1.27))\n"
           "\t\t\t\t(hide yes)\n"
           "\t\t\t)\n"
-          "\t\t)\n"
-          "\t\t(pin \"1\" (uuid \"%s\"))\n"
-          "\t\t(pin \"2\" (uuid \"%s\"))\n"
+          "\t\t)\n",
+          lib_id, x, y, uuid, component->role, x + 2, y - 5,
+          component->part.mpn, x + 2, y + 5, footprint, x - 2, y, x, y, desc, x,
+          y);
+
+  for (p = 0; p < component->pin_count && p < 8; p++) {
+    fprintf(fp, "\t\t(pin \"%s\" (uuid \"%s\"))\n", component->pins[p],
+            pin_uuids[p]);
+  }
+
+  fprintf(fp,
           "\t\t(instances\n"
           "\t\t\t(project \"\"\n"
           "\t\t\t\t(path \"/00000000-0000-4000-8000-000000000001\"\n"
@@ -590,9 +675,7 @@ static void write_placed_resistor(FILE *fp, const CompiledComponent *component,
           "\t\t\t)\n"
           "\t\t)\n"
           "\t)\n",
-          lib_id, x, y, uuid, component->role, x + 2, y - 5, component->part.mpn,
-          x + 2, y + 5, footprint, x - 2, y, x, y, desc, x, y, pin1_uuid,
-          pin2_uuid, component->role);
+          component->role);
 }
 
 static void write_wire(FILE *fp, double x1, double y1, double x2, double y2,
@@ -651,8 +734,6 @@ int compiler_write_kicad_sch(const char *filename,
   FILE *fp;
   int i;
   char uuid[64];
-  char pin1_uuid[64];
-  char pin2_uuid[64];
 
   if (!filename || !schematic)
     return 0;
@@ -673,14 +754,22 @@ int compiler_write_kicad_sch(const char *filename,
               "\t(lib_symbols\n");
 
   write_resistor_library_symbol(fp);
-  write_twoterm_library_symbol(fp, "Device:C", "C", "Capacitor");
-  write_twoterm_library_symbol(fp, "Device:L", "L", "Inductor");
-  write_twoterm_library_symbol(fp, "Device:LED", "D", "LED");
-  write_twoterm_library_symbol(fp, "Device:Q_NPN_BCE", "Q", "NPN");
-  write_twoterm_library_symbol(fp, "Device:LDO", "U", "Regulator");
-  write_twoterm_library_symbol(fp, "Device:SW", "SW", "Switch");
-  write_twoterm_library_symbol(fp, "Device:Battery", "BT", "Battery");
-  write_twoterm_library_symbol(fp, "Device:OpAmp", "U", "OpAmp");
+  write_twoterm_library_symbol(fp, "Device:C", "C", "C", "Capacitor", 2);
+  write_twoterm_library_symbol(fp, "Device:L", "L", "L", "Inductor", 2);
+  write_twoterm_library_symbol(fp, "Device:LED", "D", "LED", "LED", 2);
+  {
+    const char *q_pins[] = {"E", "B", "C"};
+    const char *ldo_pins[] = {"VIN", "VOUT", "GND"};
+    const char *op_pins[] = {"IN+", "IN-", "OUT", "VCC", "VEE"};
+    write_library_symbol(fp, "Device:Q_NPN_BCE", "Q", "Q_NPN_BCE", "NPN",
+                         q_pins, 3);
+    write_library_symbol(fp, "Device:LDO", "U", "LDO", "Regulator", ldo_pins,
+                         3);
+    write_twoterm_library_symbol(fp, "Device:SW", "SW", "SW", "Switch", 2);
+    write_twoterm_library_symbol(fp, "Device:Battery", "BT", "Battery",
+                                 "Battery", 2);
+    write_library_symbol(fp, "Device:OpAmp", "U", "OpAmp", "OpAmp", op_pins, 5);
+  }
   fprintf(fp, "\t)\n");
 
   /*
@@ -695,14 +784,16 @@ int compiler_write_kicad_sch(const char *filename,
     const CompiledComponent *r1 = &schematic->components[0];
     const CompiledComponent *r2 = &schematic->components[1];
 
-    write_placed_resistor(fp, r1, 100, 80,
-                          "00000000-0000-4000-8000-000000000101",
-                          "00000000-0000-4000-8000-000000000111",
-                          "00000000-0000-4000-8000-000000000112");
-    write_placed_resistor(fp, r2, 100, 110,
-                          "00000000-0000-4000-8000-000000000102",
-                          "00000000-0000-4000-8000-000000000121",
-                          "00000000-0000-4000-8000-000000000122");
+    const char *r1_pins[] = {"00000000-0000-4000-8000-000000000111",
+                             "00000000-0000-4000-8000-000000000112"};
+    write_placed_component(fp, r1, 100, 80,
+                           "00000000-0000-4000-8000-000000000101", r1_pins);
+
+    const char *r2_pins[] = {"00000000-0000-4000-8000-000000000121",
+                             "00000000-0000-4000-8000-000000000122"};
+    write_placed_component(fp, r2, 100, 110,
+                           "00000000-0000-4000-8000-000000000102", r2_pins);
+
     write_wire(fp, 100, 76.19, 100, 65.00, 201);
     write_wire(fp, 100, 83.81, 100, 106.19, 202);
     write_wire(fp, 100, 113.81, 100, 125.00, 203);
@@ -712,23 +803,47 @@ int compiler_write_kicad_sch(const char *filename,
   } else {
     /*
      * Naive grid: stub wires pin→global_label only.
-     * Do NOT wire consecutive parts — that falsely shorted unrelated nets
-     * and broke Gate4 composed ERC.
+     * Generates wiring uniformly for multiple pins instead of strictly 2 pins.
      */
     for (i = 0; i < schematic->component_count; i++) {
       double x = 100.0 + (i % 4) * 40.0;
       double y = 80.0 + (i / 4) * 40.0;
+      char pin_uuid_bufs[8][64];
+      const char *pin_uuids[8];
+      int p;
+
       make_uuid(uuid, sizeof(uuid), (unsigned)(100 + i));
-      make_uuid(pin1_uuid, sizeof(pin1_uuid), (unsigned)(200 + i * 2));
-      make_uuid(pin2_uuid, sizeof(pin2_uuid), (unsigned)(201 + i * 2));
-      write_placed_resistor(fp, &schematic->components[i], x, y, uuid, pin1_uuid,
-                            pin2_uuid);
-      write_wire(fp, x, y - 3.81, x, y - 10.0, (unsigned)(400 + i * 2));
-      write_wire(fp, x, y + 3.81, x, y + 10.0, (unsigned)(401 + i * 2));
-      write_global_label(fp, schematic->components[i].node1, x, y - 10.0,
-                         (unsigned)(300 + i * 2));
-      write_global_label(fp, schematic->components[i].node2, x, y + 10.0,
-                         (unsigned)(301 + i * 2));
+
+      for (p = 0; p < schematic->components[i].pin_count && p < 8; p++) {
+        make_uuid(pin_uuid_bufs[p], sizeof(pin_uuid_bufs[p]),
+                  (unsigned)(200 + i * 8 + p));
+        pin_uuids[p] = pin_uuid_bufs[p];
+      }
+
+      write_placed_component(fp, &schematic->components[i], x, y, uuid,
+                             pin_uuids);
+
+      for (p = 0; p < schematic->components[i].pin_count && p < 8; p++) {
+        unsigned int wire_id = (unsigned)(400 + i * 8 + p);
+        unsigned int label_id = (unsigned)(300 + i * 8 + p);
+        if (p == 0) {
+          write_wire(fp, x, y - 3.81, x, y - 10.0, wire_id);
+          write_global_label(fp, schematic->components[i].nodes[p], x, y - 10.0,
+                             label_id);
+        } else if (p == 1) {
+          write_wire(fp, x, y + 3.81, x, y + 10.0, wire_id);
+          write_global_label(fp, schematic->components[i].nodes[p], x, y + 10.0,
+                             label_id);
+        } else if (p == 2) {
+          write_wire(fp, x + 3.81, y, x + 10.0, y, wire_id);
+          write_global_label(fp, schematic->components[i].nodes[p], x + 10.0, y,
+                             label_id);
+        } else {
+          write_wire(fp, x - 3.81, y, x - 10.0, y, wire_id);
+          write_global_label(fp, schematic->components[i].nodes[p], x - 10.0, y,
+                             label_id);
+        }
+      }
     }
   }
 
@@ -801,6 +916,17 @@ bool compiler_physics_design_add(CompilerPhysDesign *design,
     if (terminal_count != 2)
       return false;
     break;
+  case COMPILER_PHYS_DIODE:
+    if (value <= 0.0 || terminal_count != 2)
+      return false;
+    break;
+  case COMPILER_PHYS_VCVS:
+  case COMPILER_PHYS_VCCS:
+  case COMPILER_PHYS_CCVS:
+  case COMPILER_PHYS_CCCS:
+    if (!isfinite(value) || terminal_count != 4)
+      return false;
+    break;
   default:
     return false;
   }
@@ -833,6 +959,8 @@ bool compiler_physics_design_add(CompilerPhysDesign *design,
   element->name[sizeof(element->name) - 1] = '\0';
   element->value = value;
   element->tolerance_pct = tolerance_pct;
+  element->diode_n = 0.0;
+  element->diode_vt = 0.0;
   element->terminal_count = terminal_count;
 
   for (i = 0; i < terminal_count; i++) {
@@ -930,25 +1058,41 @@ static bool compiler_init_element_primitive(const CompilerPhysElement *element,
 
   switch (element->kind) {
   case COMPILER_PHYS_RESISTOR:
-    return physics2_primitive_init_resistor(primitive, element->name,
-                                            element->value,
-                                            element->tolerance_pct);
+    return physics2_primitive_init_resistor(
+        primitive, element->name, element->value, element->tolerance_pct);
   case COMPILER_PHYS_CAPACITOR:
-    return physics2_primitive_init_capacitor(primitive, element->name,
-                                             element->value,
-                                             element->tolerance_pct);
+    return physics2_primitive_init_capacitor(
+        primitive, element->name, element->value, element->tolerance_pct);
   case COMPILER_PHYS_INDUCTOR:
-    return physics2_primitive_init_inductor(primitive, element->name,
-                                            element->value,
-                                            element->tolerance_pct);
+    return physics2_primitive_init_inductor(
+        primitive, element->name, element->value, element->tolerance_pct);
   case COMPILER_PHYS_VSOURCE:
-    return physics2_primitive_init_vsource(primitive, element->name,
-                                           element->value,
-                                           element->tolerance_pct);
+    return physics2_primitive_init_vsource(
+        primitive, element->name, element->value, element->tolerance_pct);
   case COMPILER_PHYS_ISOURCE:
-    return physics2_primitive_init_isource(primitive, element->name,
-                                           element->value,
-                                           element->tolerance_pct);
+    return physics2_primitive_init_isource(
+        primitive, element->name, element->value, element->tolerance_pct);
+  case COMPILER_PHYS_DIODE: {
+    double n = element->diode_n > 0.0 ? element->diode_n : 1.0;
+    double vt = element->diode_vt > 0.0
+                    ? element->diode_vt
+                    : (1.380649e-23 * 300.0) / 1.602176634e-19;
+    return physics2_primitive_init_diode(primitive, element->name,
+                                         element->value, n, vt,
+                                         element->tolerance_pct);
+  }
+  case COMPILER_PHYS_VCVS:
+    return physics2_primitive_init_vcvs(primitive, element->name, element->value,
+                                        element->tolerance_pct);
+  case COMPILER_PHYS_VCCS:
+    return physics2_primitive_init_vccs(primitive, element->name, element->value,
+                                        element->tolerance_pct);
+  case COMPILER_PHYS_CCVS:
+    return physics2_primitive_init_ccvs(primitive, element->name, element->value,
+                                        element->tolerance_pct);
+  case COMPILER_PHYS_CCCS:
+    return physics2_primitive_init_cccs(primitive, element->name, element->value,
+                                        element->tolerance_pct);
   default:
     return false;
   }
@@ -960,8 +1104,149 @@ void compiler_free_physics_program(CompiledPhysicsProgram *compiled) {
 
   physics2_program_free(&compiled->program);
   free(compiled->primitives);
+  free(compiled->nodes);
   compiled->primitives = NULL;
   compiled->primitive_count = 0;
+  compiled->nodes = NULL;
+  compiled->node_count = 0;
+}
+
+NodeId compiler_physics_find_node(const CompiledPhysicsProgram *compiled,
+                                  const char *name) {
+  size_t i;
+  if (!compiled || !name)
+    return PHYSICS2_NODE_NONE;
+  for (i = 0; i < compiled->node_count; i++) {
+    if (strcmp(compiled->nodes[i].name, name) == 0)
+      return compiled->nodes[i].id;
+  }
+  return PHYSICS2_NODE_NONE;
+}
+
+static int name_is_power_pos(const char *name) {
+  return name && (strcmp(name, "VIN") == 0 || strcmp(name, "VBUS") == 0 ||
+                  strcmp(name, "VCC") == 0 || strcmp(name, "3V3") == 0 ||
+                  strcmp(name, "5V") == 0);
+}
+
+bool compiler_schematic_to_phys_design(const CompiledSchematic *schematic,
+                                       double supply_v,
+                                       CompilerPhysDesign *out) {
+  int i;
+  int has_gnd = 0;
+  int has_pwr = 0;
+  char pwr_name[64] = "";
+
+  if (!schematic || !out)
+    return false;
+
+  compiler_physics_design_init(out);
+
+  if (!isfinite(supply_v) || supply_v == 0.0)
+    supply_v = 5.0;
+
+  for (i = 0; i < schematic->component_count; i++) {
+    const CompiledComponent *c = &schematic->components[i];
+    CompilerPhysKind kind = COMPILER_PHYS_NONE;
+    const char *terms[8];
+    uint8_t nterm;
+    int p;
+    double value = c->part.value;
+
+    nterm = (uint8_t)(c->pin_count > 0 ? c->pin_count : 2);
+    if (nterm > PHYSICS2_MAX_TERMINALS)
+      nterm = PHYSICS2_MAX_TERMINALS;
+    for (p = 0; p < (int)nterm; p++) {
+      terms[p] = c->nodes[p][0] ? c->nodes[p]
+                                : (p == 0 ? c->node1 : c->node2);
+      if (!terms[p] || !terms[p][0]) {
+        diag_set_error("Component '%s' missing node for pin index %d.",
+                       c->role, p);
+        compiler_physics_design_free(out);
+        return false;
+      }
+      if (strcmp(terms[p], "GND") == 0)
+        has_gnd = 1;
+      if (name_is_power_pos(terms[p])) {
+        has_pwr = 1;
+        strncpy(pwr_name, terms[p], sizeof(pwr_name) - 1);
+      }
+    }
+
+    switch (c->part.type) {
+    case PART_RESISTOR:
+      kind = COMPILER_PHYS_RESISTOR;
+      break;
+    case PART_CAPACITOR:
+      kind = COMPILER_PHYS_CAPACITOR;
+      break;
+    case PART_INDUCTOR:
+      kind = COMPILER_PHYS_INDUCTOR;
+      break;
+    case PART_DIODE: {
+      kind = COMPILER_PHYS_DIODE;
+      /* Catalogue LED Vf is 1.2–3.5; Shockley Isat is ≪ 1e-6. */
+      if (!(value > 0.0 && value < 1.0e-6))
+        value = 1.0e-12;
+      break;
+    }
+    case PART_TRANSISTOR:
+    case PART_IC:
+      diag_set_error(
+          "PHYSICS_UNSUPPORTED: '%s' has no Physics2 model yet (fail closed).",
+          c->role);
+      compiler_physics_design_free(out);
+      return false;
+    default:
+      diag_set_error(
+          "PHYSICS_UNSUPPORTED: component '%s' type cannot lower to Physics2.",
+          c->role);
+      compiler_physics_design_free(out);
+      return false;
+    }
+
+    if (nterm != 2) {
+      diag_set_error(
+          "PHYSICS_UNSUPPORTED: '%s' needs %u terminals; Phase 2 lowers "
+          "2-terminal devices only.",
+          c->role, (unsigned)nterm);
+      compiler_physics_design_free(out);
+      return false;
+    }
+
+    if (!compiler_physics_design_add(out, kind, c->role, value, 0.0, terms,
+                                     nterm)) {
+      diag_set_error("Failed to add '%s' to Physical IR.", c->role);
+      compiler_physics_design_free(out);
+      return false;
+    }
+
+    if (kind == COMPILER_PHYS_DIODE) {
+      CompilerPhysElement *el = &out->elements[out->count - 1];
+      el->diode_n = 1.0;
+      el->diode_vt = (1.380649e-23 * 300.0) / 1.602176634e-19;
+    }
+  }
+
+  if (has_pwr && has_gnd) {
+    const char *vs_terms[2];
+    vs_terms[0] = pwr_name;
+    vs_terms[1] = "GND";
+    if (!compiler_physics_design_add(out, COMPILER_PHYS_VSOURCE, "VSRC",
+                                     supply_v, 0.0, vs_terms, 2)) {
+      diag_set_error("Failed to inject supply voltage source.");
+      compiler_physics_design_free(out);
+      return false;
+    }
+  }
+
+  if (out->count == 0) {
+    diag_set_error("Physical IR empty after schematic lowering.");
+    compiler_physics_design_free(out);
+    return false;
+  }
+
+  return true;
 }
 
 bool compiler_lower_to_physics2(const CompilerPhysDesign *design,
@@ -988,6 +1273,20 @@ bool compiler_lower_to_physics2(const CompilerPhysDesign *design,
 
   out->primitive_count = design->count;
 
+  /* Pass 1: allocate every named node before any branch unknown is assigned.
+   * Branch ids are next_node+k; growing next_node after a branch assign
+   * would collide with node indices. */
+  for (i = 0; i < design->count; i++) {
+    const CompilerPhysElement *element = &design->elements[i];
+    for (t = 0; t < element->terminal_count; t++) {
+      NodeId ignore;
+      if (!compiler_node_map_get_or_add(&nodes, &out->program,
+                                        element->terminals[t], &ignore))
+        goto fail;
+    }
+  }
+
+  /* Pass 2: init primitives and stamp into the program (stable next_node). */
   for (i = 0; i < design->count; i++) {
     const CompilerPhysElement *element = &design->elements[i];
 
@@ -995,17 +1294,26 @@ bool compiler_lower_to_physics2(const CompilerPhysDesign *design,
       goto fail;
 
     for (t = 0; t < element->terminal_count; t++) {
-      if (!compiler_node_map_get_or_add(&nodes, &out->program,
-                                        element->terminals[t],
-                                        &terminal_ids[t]))
+      if (!compiler_node_map_get_or_add(
+              &nodes, &out->program, element->terminals[t], &terminal_ids[t]))
         goto fail;
     }
 
     if (physics2_program_add_primitive(&out->program, &out->primitives[i],
-                                       terminal_ids,
-                                       element->terminal_count) ==
+                                       terminal_ids, element->terminal_count) ==
         PHYSICS_PRIMITIVE_NONE)
       goto fail;
+  }
+
+  /* Export node map for named measurements (no manufacturer data). */
+  out->nodes = calloc(nodes.count, sizeof(*out->nodes));
+  if (nodes.count > 0 && !out->nodes)
+    goto fail;
+  out->node_count = nodes.count;
+  for (i = 0; i < nodes.count; i++) {
+    strncpy(out->nodes[i].name, nodes.items[i].name,
+            sizeof(out->nodes[i].name) - 1);
+    out->nodes[i].id = nodes.items[i].id;
   }
 
   compiler_node_map_free(&nodes);
@@ -1015,4 +1323,126 @@ fail:
   compiler_node_map_free(&nodes);
   compiler_free_physics_program(out);
   return false;
+}
+
+/*
+ * Phase 15 two-pass bind: solve DC on first-pass parts, then re-score each
+ * passive with actual |ΔV| / dissipation. Rejects parts that fail ratings.
+ */
+static DBResult rebind_with_solved_stress(DB *db, CompiledSchematic *out) {
+  CompilerPhysDesign phys;
+  CompiledPhysicsProgram compiled;
+  PhysicsAccumulator *acc = NULL;
+  PhysicsExecutionContext ctx;
+  NodeId gnd;
+  double supply;
+  int i;
+  int has_passive = 0;
+
+  if (!db || !out || out->component_count <= 0)
+    return DB_OK;
+
+  for (i = 0; i < out->component_count; i++) {
+    PartTypes t = out->components[i].part.type;
+    if (t == PART_RESISTOR || t == PART_CAPACITOR || t == PART_INDUCTOR ||
+        t == PART_DIODE)
+      has_passive = 1;
+  }
+  if (!has_passive)
+    return DB_OK;
+
+  supply = infer_supply_v(NULL, 0, &out->components[0]);
+  if (supply <= 0.0) {
+    /* Fall back: scan all component nodes. */
+    for (i = 0; i < out->component_count && supply <= 0.0; i++)
+      supply = infer_supply_v(NULL, 0, &out->components[i]);
+  }
+  if (supply <= 0.0)
+    supply = 5.0;
+
+  memset(&compiled, 0, sizeof(compiled));
+  compiler_physics_design_init(&phys);
+  if (!compiler_schematic_to_phys_design(out, supply, &phys)) {
+    /* Unsupported devices (xstr/IC): skip rebind, keep first-pass bind. */
+    compiler_physics_design_free(&phys);
+    return DB_OK;
+  }
+  if (!compiler_lower_to_physics2(&phys, &compiled)) {
+    compiler_physics_design_free(&phys);
+    return DB_OK;
+  }
+
+  gnd = compiler_physics_find_node(&compiled, "GND");
+  if (gnd == PHYSICS2_NODE_NONE) {
+    compiler_free_physics_program(&compiled);
+    compiler_physics_design_free(&phys);
+    return DB_OK;
+  }
+
+  acc = physics2_accumulator_create(compiled.program.next_node +
+                                    compiled.program.branch_count);
+  if (!acc) {
+    compiler_free_physics_program(&compiled);
+    compiler_physics_design_free(&phys);
+    return DB_ERROR;
+  }
+  memset(&ctx, 0, sizeof(ctx));
+  if (!physics2_context_init(&ctx, &compiled.program, acc, 0.0) ||
+      !physics2_context_step(&ctx, gnd)) {
+    physics2_context_free(&ctx);
+    physics2_accumulator_free(acc);
+    compiler_free_physics_program(&compiled);
+    compiler_physics_design_free(&phys);
+    /* Solve failed — keep first-pass bind; verify will report. */
+    return DB_OK;
+  }
+
+  for (i = 0; i < out->component_count; i++) {
+    CompiledComponent *cc = &out->components[i];
+    NodeId n0 = compiler_physics_find_node(&compiled, cc->node1);
+    NodeId n1 = compiler_physics_find_node(&compiled, cc->node2);
+    double drop = 0.0;
+    double dissip = 0.0;
+    BindChoice choice;
+    ToleranceClass tol = TOLERANCE_E24;
+    const char *package = cc->part.package[0] ? cc->part.package : "0603";
+
+    if (n0 == PHYSICS2_NODE_NONE || n1 == PHYSICS2_NODE_NONE)
+      continue;
+    drop = fabs(ctx.solution[n0] - ctx.solution[n1]);
+    if (cc->part.type == PART_RESISTOR && cc->part.value > 0.0)
+      dissip = (drop * drop) / cc->part.value;
+
+    if (cc->part.type != PART_RESISTOR && cc->part.type != PART_CAPACITOR &&
+        cc->part.type != PART_INDUCTOR && cc->part.type != PART_DIODE)
+      continue;
+
+    if (cc->part.type != PART_RESISTOR)
+      tol = TOLERANCE_E12;
+
+    /* Already meets ratings under solved stress — keep. */
+    if ((cc->part.v_rating <= 0.0 || drop <= cc->part.v_rating) &&
+        (cc->part.power_rating_w <= 0.0 || dissip <= cc->part.power_rating_w))
+      continue;
+
+    if (bind_score_passive(db, cc->part.type, cc->part.value, package, tol,
+                           drop, dissip, &choice) != 0)
+      continue; /* leave first-pass; verify fails closed on rating */
+
+    cc->part = choice.primary;
+    strncpy(cc->rationale, choice.rationale, sizeof(cc->rationale) - 1);
+    cc->unit_cost = choice.unit_cost;
+    cc->has_alternate = choice.has_alternate;
+    if (choice.has_alternate)
+      strncpy(cc->alternate_mpn, choice.alternate.mpn,
+              sizeof(cc->alternate_mpn) - 1);
+    else
+      cc->alternate_mpn[0] = '\0';
+  }
+
+  physics2_context_free(&ctx);
+  physics2_accumulator_free(acc);
+  compiler_free_physics_program(&compiled);
+  compiler_physics_design_free(&phys);
+  return DB_OK;
 }

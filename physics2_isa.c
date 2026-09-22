@@ -188,6 +188,18 @@ const char *physics_opcode_name(PhysicsOpcode opcode) {
   case PHYS_OP_LOGIC_GATE:
     return "LOGIC_GATE";
 
+  case PHYS_OP_SWITCH:
+    return "SWITCH";
+
+  case PHYS_OP_OPAMP:
+    return "OPAMP";
+
+  case PHYS_OP_LDO:
+    return "LDO";
+
+  case PHYS_OP_BATTERY:
+    return "BATTERY";
+
   default:
     return "UNKNOWN";
   }

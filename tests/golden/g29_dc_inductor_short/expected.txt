@@ -1,0 +1,3 @@
+g29_dc_inductor_short
+vmid=0.000000
+ok=1

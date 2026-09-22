@@ -1,0 +1,1 @@
+Bypass 100nF next to the MCU.

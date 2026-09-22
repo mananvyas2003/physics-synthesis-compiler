@@ -18,18 +18,19 @@ fi
 if command -v gcc >/dev/null 2>&1; then
     echo "Compiling synth with gcc (${LIBS})..."
     gcc -std=c11 -O2 \
-        -I. -Icli -Iseed -Iemit -Ispec -Icompose -Ibind -Iverify \
+        -I. -Icli -Iseed -Iemit -Ispec -Icompose -Ibind -Iverify -Inlp \
         -Ithird_party/sqlite3 -Ithird_party/cJSON -Ivendor_next/src \
         -o synth \
         main.c db.c catalogue.c jlcparts_import.c dfm_compose.c mfg_dfm.c vendor_bridge.c compiler.c \
         unit_parse.c diag_error.c part_lib.c \
         physics2_isa.c physics2_interpreter.c physics2_types.c physics2_print.c \
         physics2_symbols.c physics2_typecheck.c seed/seed_topology.c \
-        emit/emit_bom.c emit/emit_netlist.c emit/emit_snapshot.c \
+        emit/emit_bom.c emit/emit_netlist.c emit/emit_snapshot.c emit/emit_pcb.c \
         spec/spec_load.c spec/llm_provider.c spec/schematic_load.c spec/gemini_schematic.c \
+        nlp/nlp.c nlp/nlp_runtime.c \
         compose/compose.c bind/bind_scorer.c verify/verify_report.c \
         cli/cli_common.c cli/cmd_db.c cli/cmd_dfm.c cli/cmd_compile.c \
-        cli/cmd_physics2.c cli/cmd_generate.c \
+        cli/cmd_physics2.c cli/cmd_generate.c cli/cmd_parse.c \
         vendor_next/src/vec.c vendor_next/src/intern.c vendor_next/src/range.c \
         vendor_next/src/constraint.c vendor_next/src/component.c vendor_next/src/net.c \
         vendor_next/src/design.c vendor_next/src/component_model.c \

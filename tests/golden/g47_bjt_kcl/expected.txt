@@ -1,0 +1,3 @@
+g47_bjt_kcl
+kcl_ok=1
+ok=1

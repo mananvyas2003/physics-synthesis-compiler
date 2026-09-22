@@ -1,0 +1,1 @@
+Put a 10k resistor between 3V3 and ADC_SENSE.

@@ -1,0 +1,5 @@
+g80_macro_corpus
+catalog_macros=14
+industrial_blocks=6
+power_tree_blocks=5
+ok=1

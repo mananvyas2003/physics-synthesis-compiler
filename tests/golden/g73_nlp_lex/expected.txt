@@ -1,0 +1,4 @@
+g73_nlp_lex
+flags=7
+ambiguous=1
+ok=1

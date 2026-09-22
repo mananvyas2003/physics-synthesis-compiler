@@ -1,0 +1,95 @@
+{
+  "id": "buck_5v_stub",
+  "family": "POWER",
+  "note": "Topology placeholder only; not a switching converter model.",
+  "ports": [
+    {
+      "name": "vin",
+      "kind": "power_in",
+      "electrical": {
+        "voltage": {
+          "min": 11.0,
+          "max": 13.0
+        },
+        "current": {
+          "min": 0.0,
+          "max": 2.0
+        },
+        "impedance_ohms": 0.5
+      }
+    },
+    {
+      "name": "vout",
+      "kind": "power_out",
+      "electrical": {
+        "voltage": {
+          "min": 4.75,
+          "max": 5.25
+        },
+        "current": {
+          "min": 0.0,
+          "max": 1.0
+        },
+        "impedance_ohms": 0.1
+      }
+    },
+    {
+      "name": "gnd",
+      "kind": "gnd",
+      "electrical": {
+        "voltage": {
+          "min": 0,
+          "max": 0
+        },
+        "current": {
+          "min": 0.0,
+          "max": 0
+        },
+        "impedance_ohms": 0
+      }
+    }
+  ],
+  "expand": {
+    "parts": [
+      {
+        "mpn": "DEMO-10K-0603-A",
+        "type": "resistor",
+        "value": 10000.0,
+        "package": "0603",
+        "v_rating": 50.0,
+        "power_rating_w": 0.125
+      }
+    ],
+    "components": [
+      {
+        "role": "fb",
+        "part_type": "resistor",
+        "quantity": 1,
+        "target_value": 10000,
+        "package": "0603"
+      }
+    ],
+    "nodes": [
+      "V12",
+      "VBUS",
+      "GND"
+    ],
+    "connections": [
+      {
+        "role": "fb",
+        "pin": "1",
+        "node": "V12"
+      },
+      {
+        "role": "fb",
+        "pin": "2",
+        "node": "VBUS"
+      }
+    ],
+    "port_nets": {
+      "vin": "V12",
+      "vout": "VBUS",
+      "gnd": "GND"
+    }
+  }
+}

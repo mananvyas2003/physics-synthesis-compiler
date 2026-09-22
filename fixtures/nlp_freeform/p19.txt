@@ -1,0 +1,1 @@
+Place a 100n bypass on SENSOR_VDD.

@@ -14,6 +14,7 @@ int cmd_dfm(int argc, char **argv);
 int cmd_compile(int argc, char **argv);
 int cmd_physics2(int argc, char **argv);
 int cmd_generate(int argc, char **argv);
+int cmd_parse(int argc, char **argv);
 int cmd_generate_design(const char *design_json, const char *out_dir,
                         const char *catalogue_db, const char *dfm_profile);
 

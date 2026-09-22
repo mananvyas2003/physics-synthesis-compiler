@@ -1,0 +1,1 @@
+Resistor 4.7k from 3V3 to GPIO1.

@@ -1,0 +1,3 @@
+g56_ldo_regulate
+region=regulate
+ok=1

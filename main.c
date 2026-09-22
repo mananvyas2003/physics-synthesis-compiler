@@ -24,6 +24,9 @@ int main(int argc, char **argv) {
   if (strcmp(argv[1], "generate") == 0)
     return cmd_generate(argc, argv);
 
+  if (strcmp(argv[1], "parse") == 0)
+    return cmd_parse(argc, argv);
+
   if (strcmp(argv[1], "help") == 0 || strcmp(argv[1], "--help") == 0 ||
       strcmp(argv[1], "-h") == 0) {
     print_usage();

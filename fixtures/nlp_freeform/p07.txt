@@ -1,0 +1,1 @@
+Create an RC low-pass with about 1 kHz cutoff.

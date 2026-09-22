@@ -18,6 +18,7 @@ static void add_basic_resistor(
 
     strcpy(r.reference, reference);
     r.footprint = footprint;
+    r.package = footprint ? "0603" : NULL;
     r.symbol = "Device:R";
     r.model.kind = COMPONENT_RESISTOR;
     component_set_value(&r, 1000.0, 1.0);

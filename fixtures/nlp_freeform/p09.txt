@@ -1,0 +1,1 @@
+Condition a thermistor for an ADC.

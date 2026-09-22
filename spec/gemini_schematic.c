@@ -121,6 +121,11 @@ static int response_is_retriable_model_error(const char *resp, int *is_404) {
 
 int gemini_api_key_present(void) { return api_key() != NULL; }
 
+int gemini_replay_active(void) {
+  const char *p = getenv("SYNTH_GEMINI_REPLAY");
+  return (p && p[0]) ? 1 : 0;
+}
+
 static char *read_all_file(const char *path) {
   FILE *fp;
   long size;
@@ -344,6 +349,55 @@ static char *gemini_response_text(const char *http_body) {
   return accum;
 }
 
+/* Replay cassette: SYNTH_GEMINI_REPLAY/http_response.json → IR (no curl). */
+static int gemini_from_replay(const char *out_ir_path, SchematicIrMeta *meta) {
+  const char *dir = getenv("SYNTH_GEMINI_REPLAY");
+  char resp_path[1024];
+  char *resp = NULL;
+  char *model_text = NULL;
+  char *json_obj = NULL;
+  int rc = 1;
+
+  if (!dir || !dir[0] || !out_ir_path || !meta)
+    return 1;
+  snprintf(resp_path, sizeof(resp_path), "%s/http_response.json", dir);
+  resp = read_all_file(resp_path);
+  if (!resp) {
+    snprintf(meta->clarifying_question, sizeof(meta->clarifying_question),
+             "GEMINI_REPLAY missing %s", resp_path);
+    return 1;
+  }
+  model_text = gemini_response_text(resp);
+  if (!model_text) {
+    snprintf(meta->clarifying_question, sizeof(meta->clarifying_question),
+             "GEMINI_REPLAY http_response.json has no candidates text");
+    goto done;
+  }
+  json_obj = extract_json_object(model_text);
+  if (!json_obj) {
+    snprintf(meta->clarifying_question, sizeof(meta->clarifying_question),
+             "GEMINI_REPLAY could not extract JSON object from model text");
+    goto done;
+  }
+  if (write_all_file(out_ir_path, json_obj) != 0) {
+    snprintf(meta->clarifying_question, sizeof(meta->clarifying_question),
+             "GEMINI_REPLAY cannot write IR");
+    goto done;
+  }
+  if (schematic_ir_load_and_validate(out_ir_path, meta) != 0) {
+    if (!meta->clarifying_question[0])
+      snprintf(meta->clarifying_question, sizeof(meta->clarifying_question),
+               "GEMINI_REPLAY IR failed schema validation");
+    goto done;
+  }
+  rc = 0;
+done:
+  free(json_obj);
+  free(model_text);
+  free(resp);
+  return rc;
+}
+
 static int curl_post_json(const char *url, const char *api_key_hdr,
                           const char *body_path, const char *resp_path) {
   char cmd[2048];
@@ -537,9 +591,14 @@ int gemini_schematic_from_prompt(const char *prompt_text, const char *out_ir_pat
   memset(meta, 0, sizeof(*meta));
   feedback[0] = '\0';
 
+  /* Deterministic replay — no network, no API key */
+  if (gemini_replay_active())
+    return gemini_from_replay(out_ir_path, meta);
+
   if (!gemini_api_key_present()) {
     snprintf(meta->clarifying_question, sizeof(meta->clarifying_question),
-             "Set GEMINI_API_KEY in the environment for live prompt→schematic.");
+             "Set GEMINI_API_KEY for live mode, or SYNTH_GEMINI_REPLAY=<cassette> "
+             "for replay.");
     return 1;
   }
 
