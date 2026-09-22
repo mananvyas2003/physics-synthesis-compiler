@@ -85,6 +85,18 @@ int main(void)
     assert(errors == 0);
     assert(diagnostic_count(&diagnostics) == 0);
 
+    /* Builtin defaults must satisfy profile_consistency (kicad-erc uses them). */
+    {
+        DfmProfile std = profile_standard_default();
+        DfmProfile wear = profile_wearable_default();
+        diagnostic_list_free(&diagnostics);
+        diagnostic_list_init(&diagnostics);
+        assert(dfm_run_all(&registry, &design, &std, &diagnostics) == 0);
+        assert(diagnostic_count(&diagnostics) == 0);
+        assert(dfm_run_all(&registry, &design, &wear, &diagnostics) == 0);
+        assert(diagnostic_count(&diagnostics) == 0);
+    }
+
     /* Add a deliberately broken component. */
     uint32_t bad_id;
     add_basic_resistor(

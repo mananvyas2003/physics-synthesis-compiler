@@ -15,7 +15,8 @@ DfmProfile profile_standard_default(void) {
       .copper_weight_oz = 1.0,
       .min_trace_width_mm = 0.127, // 5 mil, JLCPCB 1-2 layer minimum
       .min_clearance_mm = 0.127,   // pad-to-pad, no hole, different nets
-      .min_via_diameter_mm = 0.5,  // single/double layer minimum
+      /* via >= drill + 2*annular (0.3+2*0.13=0.56); use 0.6 JLCPCB-class */
+      .min_via_diameter_mm = 0.6,
       .min_drill_mm = 0.3,
       .min_annular_ring_mm = 0.13,     // 1oz copper
       .board_edge_clearance_mm = 0.25, // outer layer copper-to-edge

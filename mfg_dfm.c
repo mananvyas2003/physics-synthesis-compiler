@@ -15,7 +15,7 @@ MfgDfmProfile mfg_dfm_profile_standard(void) {
   p.copper_weight_oz = 1.0;
   p.min_trace_width_mm = 0.127;
   p.min_clearance_mm = 0.127;
-  p.min_via_diameter_mm = 0.5;
+  p.min_via_diameter_mm = 0.6; /* >= drill + 2*annular (0.56) */
   p.min_drill_mm = 0.3;
   p.min_annular_ring_mm = 0.13;
   p.board_edge_clearance_mm = 0.25;
