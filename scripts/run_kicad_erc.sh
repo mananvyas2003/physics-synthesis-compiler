@@ -22,6 +22,8 @@ if ! command -v kicad-cli >/dev/null 2>&1; then
 fi
 
 export SYNTH_FIXTURE_ROOT="${SYNTH_FIXTURE_ROOT:-$ROOT}"
+# Fixture/seed IR embeds DEMO parts[]; allow insert even when a catalogue env is set.
+export SYNTH_ALLOW_IR_PARTS="${SYNTH_ALLOW_IR_PARTS:-1}"
 mkdir -p "$OUT/divider" "$OUT/compose"
 
 echo "[ERC] generate divider..."

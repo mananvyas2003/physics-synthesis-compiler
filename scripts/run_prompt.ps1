@@ -11,6 +11,23 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $root
 $env:SYNTH_FIXTURE_ROOT = $root
+# Seed/fixture IR embeds DEMO parts[]; keep inserting them if a catalogue is set.
+if (-not $env:SYNTH_ALLOW_IR_PARTS) { $env:SYNTH_ALLOW_IR_PARTS = "1" }
+
+# Load key from GEMINI_API_KEY.local (same as web/server.py) without printing it.
+$keyFile = Join-Path $root "GEMINI_API_KEY.local"
+if ((-not $env:GEMINI_API_KEY) -and (-not $env:SYNTH_LLM_API_KEY) -and (Test-Path $keyFile)) {
+  foreach ($raw in Get-Content $keyFile) {
+    $line = $raw.Trim()
+    if (-not $line -or $line.StartsWith("#")) { continue }
+    if ($line -match '^(GEMINI_API_KEY|SYNTH_LLM_API_KEY)\s*=\s*(.+)$') {
+      Set-Item -Path ("Env:" + $Matches[1]) -Value ($Matches[2].Trim().Trim('"').Trim("'"))
+    } elseif (-not $env:GEMINI_API_KEY) {
+      $env:GEMINI_API_KEY = $line
+    }
+    break
+  }
+}
 
 if (-not $Synth) {
   if (Test-Path ".\synth.exe") { $Synth = ".\synth.exe" }

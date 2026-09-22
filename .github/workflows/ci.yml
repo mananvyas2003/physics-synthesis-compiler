@@ -24,6 +24,7 @@ jobs:
         shell: bash
         run: |
           export SYNTH_FIXTURE_ROOT="${GITHUB_WORKSPACE}"
+          export SYNTH_ALLOW_IR_PARTS=1
           if [ -x build/golden_runner ]; then
             ctest --test-dir build --output-on-failure
           else
@@ -46,6 +47,7 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           SYNTH_FIXTURE_ROOT: ${{ github.workspace }}
+          SYNTH_ALLOW_IR_PARTS: "1"
         run: ctest --test-dir build-asan --output-on-failure
 
   kicad-erc:
@@ -74,6 +76,8 @@ jobs:
         env:
           SYNTH_FIXTURE_ROOT: ${{ github.workspace }}
           SYNTH_BIN: ${{ github.workspace }}/build/synth
+          # Seed/fixture IR embeds parts[]; keep inserting them even if a catalogue is set.
+          SYNTH_ALLOW_IR_PARTS: "1"
         run: |
           chmod +x scripts/run_kicad_erc.sh
           scripts/run_kicad_erc.sh "${GITHUB_WORKSPACE}/out_erc"

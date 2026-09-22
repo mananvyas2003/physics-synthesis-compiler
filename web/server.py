@@ -123,70 +123,18 @@ def find_synth() -> Path:
 
 def ensure_user_data() -> None:
     """Seed/merge shared catalogue from project DEMO fixture parts; default DFM."""
-    import sqlite3
+    # Keep logic in scripts/seed_catalogue.py (single place).
+    import importlib.util
 
-    USER_DATA.mkdir(parents=True, exist_ok=True)
-    if not DFM_PROFILE.is_file() and DEFAULT_DFM.is_file():
-        DFM_PROFILE.write_text(DEFAULT_DFM.read_text(encoding="utf-8"), encoding="utf-8")
-
-    type_map = {
-        "resistor": 0,
-        "capacitor": 1,
-        "inductor": 2,
-        "diode": 3,
-        "led": 3,
-        "transistor": 4,
-        "bjt": 4,
-        "mosfet": 4,
-        "opamp": 5,
-        "regulator": 5,
-        "ldo": 5,
-        "switch": 6,
-        "connector": 6,
-        "battery": 7,
-    }
-    con = sqlite3.connect(str(CATALOGUE_DB))
-    con.execute(
-        "CREATE TABLE IF NOT EXISTS Parts ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, mpn TEXT UNIQUE NOT NULL, "
-        "type INTEGER NOT NULL, value REAL NOT NULL, package TEXT NOT NULL, "
-        "v_rating REAL, i_rating REAL, esr_ohms REAL, power_rating_w REAL, "
-        "tolerance_class INTEGER)"
+    spec = importlib.util.spec_from_file_location(
+        "seed_catalogue", ROOT / "scripts" / "seed_catalogue.py"
     )
-    seen = set()
-    for pattern in (
-        "fixtures/seed/*.json",
-        "fixtures/schematics/*.json",
-    ):
-        for path in ROOT.glob(pattern):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            for part in data.get("parts") or []:
-                mpn = part.get("mpn")
-                if not mpn or mpn in seen:
-                    continue
-                seen.add(mpn)
-                con.execute(
-                    "INSERT OR IGNORE INTO Parts "
-                    "(mpn, type, value, package, v_rating, i_rating, "
-                    "esr_ohms, power_rating_w, tolerance_class) "
-                    "VALUES (?,?,?,?,?,?,?,?,?)",
-                    (
-                        mpn,
-                        type_map.get(str(part.get("type", "")).lower(), 7),
-                        float(part.get("value") or 0),
-                        str(part.get("package") or "0603"),
-                        float(part.get("v_rating") or 0),
-                        float(part.get("i_rating") or 0),
-                        float(part.get("esr_ohms") or 0),
-                        float(part.get("power_rating_w") or 0),
-                        2,  # E24 default
-                    ),
-                )
-    con.commit()
-    con.close()
+    if spec is None or spec.loader is None:
+        raise RuntimeError("scripts/seed_catalogue.py missing")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    if mod.seed() != 0:
+        raise RuntimeError("catalogue seed failed")
 
 
 def catalogue_status() -> dict:

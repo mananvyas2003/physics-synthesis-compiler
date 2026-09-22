@@ -51,4 +51,7 @@ Live mode writes `out/prompt_schematic.json`, validates `schematic-ir.v1` (up to
 ## Notes
 
 - Without `GEMINI_API_KEY`, `--prompt fixtures/prompts/NNN.txt` still uses the hand-written offline corpus.
+- Keys from [Google AI Studio](https://aistudio.google.com/apikey) usually start with `AIza`. Put the key in the environment or in gitignored `GEMINI_API_KEY.local` (one line).
+- Seed DEMO catalogue parts used by fixtures: `python scripts/seed_catalogue.py`
+- For seed/fixture generates that embed `parts[]` while a catalogue is active: `SYNTH_ALLOW_IR_PARTS=1` (set in CI / `scripts/run_kicad_erc.sh`).
 - Compiler remains resistor-focused; ask the model for small passive networks for best results.

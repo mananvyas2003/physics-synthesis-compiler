@@ -1,1 +1,1 @@
-Prompt 010: design a board needing rails and 0.5A
+Prompt 010: 2-resistor 4.7k/4.7k voltage divider from VIN to GND with mid node VOUT

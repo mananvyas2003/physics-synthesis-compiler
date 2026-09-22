@@ -56,7 +56,7 @@ You can also upload:
 
 Default DFM profile is **standard** from [electronics_vendor_v2_next `src/dfm.c`](https://github.com/Abheesht04/electronics_vendor_v2_next/blob/main/src/dfm.c) (also `fixtures/dfm/wearable.json`). Checks: floating pins, missing footprints, component height, profile consistency (via/drill/annular/trace/clearance), and package body/pad vs min clearance/trace.
 
-Generate merges the shared catalogue and applies the active DFM profile automatically.
+Generate merges the shared catalogue and applies the active DFM profile automatically. Catalogue DEMO parts (LED/C/L/…) are seeded via `python scripts/seed_catalogue.py` (also on web start).
 
 Chat uses **async jobs**: `POST /api/generate` → `job_id`, then poll `GET /api/jobs/{id}` until `done`/`error`. Sync `POST /api/chat` remains for scripts.
 
