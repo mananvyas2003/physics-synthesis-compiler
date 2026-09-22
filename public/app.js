@@ -157,6 +157,59 @@ dfmFile?.addEventListener("change", async () => {
 
 refreshCatalogue();
 
+async function pollGenerateJob(jobId, onTick) {
+  const deadline = Date.now() + 180000;
+  while (Date.now() < deadline) {
+    const res = await fetch(`/api/jobs/${jobId}`);
+    const job = await res.json();
+    if (!res.ok || !job.ok) {
+      throw new Error((job && job.error) || `job poll failed (${res.status})`);
+    }
+    if (typeof onTick === "function") onTick(job.status || "…");
+    if (job.status === "done" || job.status === "error") {
+      return job.result || { ok: false, error: "missing job result" };
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error("generate timed out waiting for job");
+}
+
+function showGenerateResult(data) {
+  const lines = [
+    "Schematic generated.",
+    data.verification_summary
+      ? `Verification: ${data.verification_summary}`
+      : null,
+    data.run_id ? `Run: ${data.run_id}` : null,
+  ].filter(Boolean);
+
+  let inspector = "";
+  try {
+    const snapText =
+      data.artifact_contents &&
+      data.artifact_contents["design-snapshot.v1.json"];
+    if (snapText) {
+      const snap = JSON.parse(snapText);
+      const comps = (snap.components || [])
+        .map((c) => `${c.role}  ${c.mpn}  val=${c.value}`)
+        .join("\n");
+      const nets = (snap.nets || [])
+        .map((n) => `${n.name}: ${(n.pins || []).join(", ")}`)
+        .join("\n");
+      inspector = `Components\n${comps}\n\nNets\n${nets}`;
+    }
+  } catch (_) {
+    /* ignore */
+  }
+
+  addBubble("bot", lines.join("\n"), {
+    artifacts: data.artifacts,
+    artifact_contents: data.artifact_contents,
+    inspector,
+    meta: "Inspect connectivity below, or open Schematic in KiCad.",
+  });
+}
+
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const prompt = promptEl.value.trim();
@@ -165,16 +218,32 @@ form.addEventListener("submit", async (e) => {
   addBubble("user", prompt);
   promptEl.value = "";
   sendBtn.disabled = true;
-  setStatus("Generating…");
-  const thinking = addBubble("bot", "Calling Gemini → bind → verify → emit…");
+  setStatus("Queued…");
+  const thinking = addBubble("bot", "Queued generate job…");
 
   try {
-    const res = await fetch("/api/chat", {
+    const res = await fetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt }),
     });
-    const data = await res.json();
+    const enq = await res.json();
+    if (!res.ok || !enq.ok || !enq.job_id) {
+      thinking.remove();
+      addBubble("bot", (enq && enq.error) || "Failed to enqueue generate.", {
+        error: true,
+      });
+      setStatus("Failed");
+      return;
+    }
+
+    setStatus(`Job ${enq.job_id.slice(0, 8)}…`);
+    thinking.querySelector(".text").textContent =
+      "Calling Gemini → bind → verify → emit…";
+    const data = await pollGenerateJob(enq.job_id, (st) => {
+      setStatus(`Job ${st}…`);
+      thinking.querySelector(".text").textContent = `Status: ${st}`;
+    });
     thinking.remove();
 
     if (!data.ok) {
@@ -183,39 +252,7 @@ form.addEventListener("submit", async (e) => {
       return;
     }
 
-    const lines = [
-      "Schematic generated.",
-      data.verification_summary
-        ? `Verification: ${data.verification_summary}`
-        : null,
-      data.run_id ? `Run: ${data.run_id}` : null,
-    ].filter(Boolean);
-
-    let inspector = "";
-    try {
-      const snapText =
-        data.artifact_contents &&
-        data.artifact_contents["design-snapshot.v1.json"];
-      if (snapText) {
-        const snap = JSON.parse(snapText);
-        const comps = (snap.components || [])
-          .map((c) => `${c.role}  ${c.mpn}  val=${c.value}`)
-          .join("\n");
-        const nets = (snap.nets || [])
-          .map((n) => `${n.name}: ${(n.pins || []).join(", ")}`)
-          .join("\n");
-        inspector = `Components\n${comps}\n\nNets\n${nets}`;
-      }
-    } catch (_) {
-      /* ignore */
-    }
-
-    addBubble("bot", lines.join("\n"), {
-      artifacts: data.artifacts,
-      artifact_contents: data.artifact_contents,
-      inspector,
-      meta: "Inspect connectivity below, or open Schematic in KiCad.",
-    });
+    showGenerateResult(data);
     setStatus("Ready");
   } catch (err) {
     thinking.remove();

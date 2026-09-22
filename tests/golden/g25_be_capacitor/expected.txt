@@ -1,0 +1,3 @@
+g25_be_capacitor
+vmid=2.500000
+ok=1

@@ -1,0 +1,2 @@
+g23_singular_float
+solve_failed=1

@@ -89,7 +89,8 @@ static int64_t find_node_id(const TopologyNodeRow *nodes, int count,
   return 0;
 }
 
-int seed_load_topology_json(DB *db, const char *json_path) {
+int seed_load_topology_json_ex(DB *db, const char *json_path,
+                               int insert_ir_parts) {
   char *text;
   cJSON *root;
   cJSON *parts;
@@ -139,7 +140,7 @@ int seed_load_topology_json(DB *db, const char *json_path) {
   }
 
   parts = cJSON_GetObjectItemCaseSensitive(root, "parts");
-  if (cJSON_IsArray(parts)) {
+  if (insert_ir_parts && cJSON_IsArray(parts)) {
     cJSON_ArrayForEach(item, parts) {
       DBPart part;
       int64_t part_id = 0;
@@ -354,4 +355,8 @@ int seed_load_topology_json(DB *db, const char *json_path) {
 
   cJSON_Delete(root);
   return 0;
+}
+
+int seed_load_topology_json(DB *db, const char *json_path) {
+  return seed_load_topology_json_ex(db, json_path, 1);
 }

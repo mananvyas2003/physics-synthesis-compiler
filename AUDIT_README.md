@@ -97,7 +97,7 @@ Earlier Phase 1 body (fail-closed, Gemini parts, mna_validate) landed in working
 
 **Fixed:** vacuous diode validate units; IC auto-pass; Gemini MPN invent in prompt; Linux/MSVC/Vercel compile; mna_test `-lm`; Gate4 IR false positive.
 
-**Remaining:** AC/DAE/sparse (contract only); verify still analytical for LED not Physics2 diode; async UI not wired in frontend poll yet; dual static UI trees; most DFM profile fields unused.
+**Remaining:** AC/DAE/sparse (contract only); LED verify still analytical (non-LED diode uses Physics2); dual static UI trees (`public/` + `web/static/`); full PCB layout DFM (trace/clearance stubs use profile vs package sizes).
 
 ---
 
@@ -109,9 +109,9 @@ Newton for diodes is **global** in `physics2_context_step` (max 100 iters, 0.25 
 
 ## 9. Recommended next
 
-1. Wire LED/diode fixtures through Physics2 verify  
-2. Frontend poll `/api/jobs/{id}`  
-3. Complex accumulator + AC smoke  
-4. Data-driven DFM rules  
+1. Wire LED fixtures through Physics2 Shockley (or keep analytical intentionally)  
+2. Complex accumulator + AC smoke  
+3. PCB geometry DFM once layout exists  
+4. Residual/Jacobian ABI for BJT/MOS  
 
 See AUDIT_REPORT §U and `docs/math/AC_DAE_SPARSE.md`.

@@ -200,6 +200,16 @@ int vendor_dfm_check_schematic(const CompiledSchematic *schematic,
   cJSON_AddStringToObject(root, "engine", "electronics_vendor_v2_next");
   cJSON_AddStringToObject(root, "profile", profile->name);
   cJSON_AddNumberToObject(root, "layer_count", vprof.layer_count);
+  cJSON_AddNumberToObject(root, "copper_weight_oz", vprof.copper_weight_oz);
+  cJSON_AddNumberToObject(root, "min_trace_width_mm", vprof.min_trace_width_mm);
+  cJSON_AddNumberToObject(root, "min_clearance_mm", vprof.min_clearance_mm);
+  cJSON_AddNumberToObject(root, "min_via_diameter_mm",
+                          vprof.min_via_diameter_mm);
+  cJSON_AddNumberToObject(root, "min_drill_mm", vprof.min_drill_mm);
+  cJSON_AddNumberToObject(root, "min_annular_ring_mm",
+                          vprof.min_annular_ring_mm);
+  cJSON_AddNumberToObject(root, "board_edge_clearance_mm",
+                          vprof.board_edge_clearance_mm);
   cJSON_AddNumberToObject(root, "max_component_height_mm",
                           vprof.max_component_height_mm);
   cJSON_AddItemToObject(root, "errors", errors);

@@ -105,6 +105,21 @@ static int run_g22(FILE *out, const char *fixture_root) {
   return golden_g22_diode_newton(out);
 }
 
+static int run_g23(FILE *out, const char *fixture_root) {
+  (void)fixture_root;
+  return golden_g23_singular_float(out);
+}
+
+static int run_g24(FILE *out, const char *fixture_root) {
+  (void)fixture_root;
+  return golden_g24_conflict_vsources(out);
+}
+
+static int run_g25(FILE *out, const char *fixture_root) {
+  (void)fixture_root;
+  return golden_g25_be_capacitor(out);
+}
+
 static char *read_file(const char *path) {
   FILE *fp;
   long size;
@@ -261,6 +276,12 @@ int main(int argc, char **argv) {
       {"g21_ldo_3v3", "tests/golden/g21_ldo_3v3/expected.txt", run_g21},
       {"g22_diode_newton", "tests/golden/g22_diode_newton/expected.txt",
        run_g22},
+      {"g23_singular_float", "tests/golden/g23_singular_float/expected.txt",
+       run_g23},
+      {"g24_conflict_vsources",
+       "tests/golden/g24_conflict_vsources/expected.txt", run_g24},
+      {"g25_be_capacitor", "tests/golden/g25_be_capacitor/expected.txt",
+       run_g25},
   };
   size_t i;
   int failures = 0;

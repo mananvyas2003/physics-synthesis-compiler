@@ -250,9 +250,21 @@ int verify_bound_schematic(const CompiledSchematic *schematic,
       has_ic = 1;
   }
 
-  if (has_diode && !has_xstr && !has_ic)
-    return verify_led_analytical(schematic, report_path, out);
-  if (has_cap && has_res && !has_xstr && !has_ic)
+  if (has_diode && !has_xstr && !has_ic) {
+    int led_like = 0;
+    for (i = 0; i < schematic->component_count; i++) {
+      if (schematic->components[i].part.type == PART_DIODE) {
+        double v = schematic->components[i].part.value;
+        /* Catalogue LED Vf is typically 1.2–3.5 V; Shockley Is is ≪ 1e-6. */
+        if (v >= 1.2 && v <= 3.5)
+          led_like = 1;
+      }
+    }
+    if (led_like && !has_cap && !has_ind)
+      return verify_led_analytical(schematic, report_path, out);
+    /* else: Physics2 Shockley path below */
+  }
+  if (has_cap && has_res && !has_xstr && !has_ic && !has_diode)
     return verify_rc_analytical(schematic, report_path, out);
   if (has_ind && has_res && !has_xstr) {
     const CompiledComponent *rr = NULL;
@@ -374,19 +386,31 @@ int verify_bound_schematic(const CompiledSchematic *schematic,
 
   for (i = 0; i < schematic->component_count; i++) {
     NodeId terminals[2] = {PHYSICS2_NODE_NONE, PHYSICS2_NODE_NONE};
-    if (schematic->components[i].part.type != PART_RESISTOR)
-      continue; /* DC: omit capacitors (open) */
+    PartTypes t = schematic->components[i].part.type;
     for (j = 0; j < node_count; j++) {
       if (strcmp(node_names[j], schematic->components[i].node1) == 0)
         terminals[0] = node_ids[j];
       if (strcmp(node_names[j], schematic->components[i].node2) == 0)
         terminals[1] = node_ids[j];
     }
-    if (!physics2_primitive_init_resistor(&prims[stamp_count],
-                                          schematic->components[i].role,
-                                          schematic->components[i].part.value,
-                                          0.0))
-      goto done;
+    if (t == PART_RESISTOR) {
+      if (!physics2_primitive_init_resistor(
+              &prims[stamp_count], schematic->components[i].role,
+              schematic->components[i].part.value, 0.0))
+        goto done;
+    } else if (t == PART_DIODE) {
+      double isat = 1.0e-12;
+      double vt = (1.380649e-23 * 300.0) / 1.602176634e-19;
+      double pv = schematic->components[i].part.value;
+      if (pv > 0.0 && pv < 1.0e-6)
+        isat = pv;
+      if (!physics2_primitive_init_diode(&prims[stamp_count],
+                                         schematic->components[i].role, isat,
+                                         1.0, vt, 0.0))
+        goto done;
+    } else {
+      continue; /* DC: omit C (open); L not in this path */
+    }
     if (physics2_program_add_primitive(&program, &prims[stamp_count], terminals,
                                        2) == PHYSICS_PRIMITIVE_NONE)
       goto done;
@@ -449,7 +473,8 @@ int verify_bound_schematic(const CompiledSchematic *schematic,
 
   root = cJSON_CreateObject();
   cJSON_AddStringToObject(root, "schema", "verification.v1");
-  cJSON_AddStringToObject(root, "analysis", "dc_operating_point");
+  cJSON_AddStringToObject(root, "analysis",
+                          has_diode ? "diode_dc_newton" : "dc_operating_point");
   cJSON_AddBoolToObject(root, "passed", out->passed ? 1 : 0);
   cJSON_AddNumberToObject(root, "rating_violations", out->rating_violations);
   cJSON_AddNumberToObject(root, "vout", sense_v);

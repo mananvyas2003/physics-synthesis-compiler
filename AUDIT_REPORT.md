@@ -77,13 +77,12 @@ It is **not** yet a next-gen DAE/AC/nonlinear production simulator, nor a clean 
 
 - AC / complex MNA  
 - True DAE (adaptive BE/trap/BDF, LTE)  
-- Physics2 nonlinear residual/Jacobian ABI  
-- Generate-path use of vendor Newton  
-- Most DFM profile numerical rules  
-- PCB backend  
-- Async job architecture  
+- Physics2 nonlinear residual/Jacobian ABI (BJT/MOS); diode Newton is live  
+- Dual MNA (Physics2 live + vendor oracle)  
+- Full PCB-layout DFM (profile stubs for clearance/trace vs package exist)  
+- Durable async workers/queue (in-process jobs + UI poll exist)  
 - Engineering DSL above IR  
-- Analytical tests for RC/RL τ, controlled sources, singularities  
+- Controlled-source OP goldens; LED still analytical verify  
 
 ---
 

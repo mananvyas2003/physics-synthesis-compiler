@@ -54,8 +54,10 @@ You can also upload:
 | Parts CSV | `POST /api/upload/parts` | JLCPCB-style CSV (same as `synth db import`) |
 | DFM profile | `POST /api/upload/dfm` | JSON matching `fixtures/dfm/standard.json` |
 
-Default DFM profile is **standard** from [electronics_vendor_v2_next `src/dfm.c`](https://github.com/Abheesht04/electronics_vendor_v2_next/blob/main/src/dfm.c) (also `fixtures/dfm/wearable.json`). Checks: floating pins, missing footprints, component height vs profile.
+Default DFM profile is **standard** from [electronics_vendor_v2_next `src/dfm.c`](https://github.com/Abheesht04/electronics_vendor_v2_next/blob/main/src/dfm.c) (also `fixtures/dfm/wearable.json`). Checks: floating pins, missing footprints, component height, profile consistency (via/drill/annular/trace/clearance), and package body/pad vs min clearance/trace.
 
 Generate merges the shared catalogue and applies the active DFM profile automatically.
+
+Chat uses **async jobs**: `POST /api/generate` → `job_id`, then poll `GET /api/jobs/{id}` until `done`/`error`. Sync `POST /api/chat` remains for scripts.
 
 Runs are stored under `out_web/<run_id>/`.

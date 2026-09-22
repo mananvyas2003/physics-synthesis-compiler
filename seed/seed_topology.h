@@ -8,9 +8,12 @@ extern "C" {
 #endif
 
 /*
- * Load topology + demo parts from a JSON seed file into an open DB.
- * Seed data lives under fixtures/seed/; never hardcoded machine paths.
+ * Load topology (+ optional IR parts[]) from JSON into an open DB.
+ * insert_ir_parts: 1 = seed Parts from IR (fixtures/offline);
+ *                  0 = topology only — catalogue/DB is manufacturer truth.
  */
+int seed_load_topology_json_ex(DB *db, const char *json_path,
+                               int insert_ir_parts);
 int seed_load_topology_json(DB *db, const char *json_path);
 
 #ifdef __cplusplus

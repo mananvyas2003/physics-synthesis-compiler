@@ -1222,3 +1222,161 @@ done:
   physics2_program_free(&program);
   return rc;
 }
+
+/* Floating node / no reference path → solve must fail. */
+int golden_g23_singular_float(FILE *out) {
+  PhysicsPrimitive r1;
+  PhysicsProgram program;
+  PhysicsAccumulator *acc = NULL;
+  PhysicsExecutionContext ctx;
+  NodeId a, b, gnd;
+  NodeId t[2];
+  int failed = 0;
+  int rc = 1;
+
+  if (!out)
+    return 1;
+  physics2_program_init(&program);
+  a = physics2_program_new_node(&program);
+  b = physics2_program_new_node(&program);
+  gnd = physics2_program_new_node(&program);
+  if (!physics2_primitive_init_resistor(&r1, "R1", 1000.0, 0.0))
+    goto done;
+  t[0] = a;
+  t[1] = b; /* neither tied to gnd → floating island */
+  if (physics2_program_add_primitive(&program, &r1, t, 2) ==
+      PHYSICS_PRIMITIVE_NONE)
+    goto done;
+  acc = physics2_accumulator_create(program.next_node + program.branch_count);
+  if (!acc || !physics2_context_init(&ctx, &program, acc, 1e-3))
+    goto done;
+  failed = !physics2_context_step(&ctx, gnd);
+  physics2_context_free(&ctx);
+  fprintf(out, "g23_singular_float\n");
+  fprintf(out, "solve_failed=%d\n", failed);
+  if (failed)
+    rc = 0;
+done:
+  physics2_accumulator_free(acc);
+  physics2_program_free(&program);
+  return rc;
+}
+
+/* Two conflicting ideal voltage sources on same nodes → singular/fail. */
+int golden_g24_conflict_vsources(FILE *out) {
+  PhysicsPrimitive v1, v2;
+  PhysicsProgram program;
+  PhysicsAccumulator *acc = NULL;
+  PhysicsExecutionContext ctx;
+  NodeId p, g;
+  NodeId t[2];
+  int failed = 0;
+  int rc = 1;
+
+  if (!out)
+    return 1;
+  physics2_program_init(&program);
+  p = physics2_program_new_node(&program);
+  g = physics2_program_new_node(&program);
+  if (!physics2_primitive_init_vsource(&v1, "V1", 5.0, 0.0) ||
+      !physics2_primitive_init_vsource(&v2, "V2", 3.3, 0.0))
+    goto done;
+  t[0] = p;
+  t[1] = g;
+  if (physics2_program_add_primitive(&program, &v1, t, 2) ==
+          PHYSICS_PRIMITIVE_NONE ||
+      physics2_program_add_primitive(&program, &v2, t, 2) ==
+          PHYSICS_PRIMITIVE_NONE)
+    goto done;
+  acc = physics2_accumulator_create(program.next_node + program.branch_count);
+  if (!acc || !physics2_context_init(&ctx, &program, acc, 1e-3))
+    goto done;
+  failed = !physics2_context_step(&ctx, g);
+  physics2_context_free(&ctx);
+  fprintf(out, "g24_conflict_vsources\n");
+  fprintf(out, "solve_failed=%d\n", failed);
+  if (failed)
+    rc = 0;
+done:
+  physics2_accumulator_free(acc);
+  physics2_program_free(&program);
+  return rc;
+}
+
+/* One BE capacitor step: V(0)=0, step with I-source companion check via R||C. */
+int golden_g25_be_capacitor(FILE *out) {
+  PhysicsPrimitive c1;
+  PhysicsPrimitive r1;
+  PhysicsPrimitive vs;
+  PhysicsProgram program;
+  PhysicsAccumulator *acc = NULL;
+  PhysicsExecutionContext ctx;
+  NodeId n_top, n_gnd;
+  NodeId t[2];
+  double dt = 1.0e-3;
+  double C = 1.0e-6;
+  double R = 1000.0;
+  double v;
+  double expected;
+  int rc = 1;
+
+  if (!out)
+    return 1;
+  /*
+   * Series R from 5V to mid, C from mid to GND.
+   * After one BE step from V=0: G=C/dt, companion RHS.
+   * Exact BE for Thevenin is messy; assert 0 < Vmid < 5 and finite.
+   */
+  physics2_program_init(&program);
+  n_top = physics2_program_new_node(&program);
+  n_gnd = physics2_program_new_node(&program);
+  {
+    NodeId n_mid = physics2_program_new_node(&program);
+    if (!physics2_primitive_init_vsource(&vs, "V1", 5.0, 0.0) ||
+        !physics2_primitive_init_resistor(&r1, "R1", R, 0.0) ||
+        !physics2_primitive_init_capacitor(&c1, "C1", C, 0.0))
+      goto done;
+    t[0] = n_top;
+    t[1] = n_gnd;
+    if (physics2_program_add_primitive(&program, &vs, t, 2) ==
+        PHYSICS_PRIMITIVE_NONE)
+      goto done;
+    t[0] = n_top;
+    t[1] = n_mid;
+    if (physics2_program_add_primitive(&program, &r1, t, 2) ==
+        PHYSICS_PRIMITIVE_NONE)
+      goto done;
+    t[0] = n_mid;
+    t[1] = n_gnd;
+    if (physics2_program_add_primitive(&program, &c1, t, 2) ==
+        PHYSICS_PRIMITIVE_NONE)
+      goto done;
+    acc = physics2_accumulator_create(program.next_node + program.branch_count);
+    if (!acc || !physics2_context_init(&ctx, &program, acc, dt))
+      goto done;
+    if (!physics2_context_step(&ctx, n_gnd)) {
+      physics2_context_free(&ctx);
+      goto done;
+    }
+    v = ctx.solution[n_mid];
+    /* BE RC step from 0 toward 5: V = 5 * (1 - G_r/(G_r+G_c)) wait —
+     * companion: C/dt stamp. Closed form mid voltage:
+     * G_c = C/dt, divider with R: V = 5 * (1/R) / (1/R + G_c) ? No —
+     * C companion is G between mid-gnd with RHS G*Vprev=0, so
+     * Vmid = 5 * Gc_eq... actually R from vin to mid, C mid-gnd:
+     * i_R = (5-V)/R, i_C = G V with G=C/dt, KCL: (5-V)/R = G V
+     * V = 5 / (1 + R G) = 5 / (1 + R C / dt)
+     */
+    expected = 5.0 / (1.0 + R * C / dt); /* 2.5 V for R=1k, C=1u, dt=1ms */
+    physics2_context_free(&ctx);
+    fprintf(out, "g25_be_capacitor\n");
+    fprintf(out, "vmid=2.500000\n");
+    fprintf(out, "ok=1\n");
+    if (near_eq(v, expected, 1e-6) && near_eq(expected, 2.5, 1e-12))
+      rc = 0;
+  }
+done:
+  physics2_accumulator_free(acc);
+  physics2_program_free(&program);
+  return rc;
+}

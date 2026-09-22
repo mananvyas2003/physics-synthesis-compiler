@@ -290,15 +290,7 @@ int cmd_generate_design(const char *design_json, const char *out_dir,
     goto done;
   }
 
-  if (seed_load_topology_json(db, design_json) != 0) {
-    fprintf(stderr, "[GENERATE] seed failed for %s\n", design_json);
-    if (diag_last_error()[0])
-      fprintf(stderr, "[GENERATE] %s\n", diag_last_error());
-    write_error_report(out_dir, "seed/load topology", "", diag_last_error(),
-                       "Correct roles/nodes/pins in the IR.", 0);
-    goto done;
-  }
-
+  /* Catalogue is manufacturer truth; merge before topology when present. */
   if (catalogue_db && catalogue_db[0]) {
     int merged = DB_MergePartsFrom(db, catalogue_db);
     if (merged < 0)
@@ -306,6 +298,26 @@ int cmd_generate_design(const char *design_json, const char *out_dir,
     else
       printf("[GENERATE] merged %d catalogue part(s) from %s\n", merged,
              catalogue_db);
+  }
+
+  {
+    /* Catalogue present ⇒ skip IR parts[]; SYNTH_ALLOW_IR_PARTS=1 overrides. */
+    int insert_ir_parts = !(catalogue_db && catalogue_db[0]);
+    {
+      const char *allow = getenv("SYNTH_ALLOW_IR_PARTS");
+      if (allow && allow[0] == '1')
+        insert_ir_parts = 1;
+    }
+    if (seed_load_topology_json_ex(db, design_json, insert_ir_parts) != 0) {
+      fprintf(stderr, "[GENERATE] seed failed for %s\n", design_json);
+      if (diag_last_error()[0])
+        fprintf(stderr, "[GENERATE] %s\n", diag_last_error());
+      write_error_report(out_dir, "seed/load topology", "", diag_last_error(),
+                         "Correct roles/nodes/pins in the IR.", 0);
+      goto done;
+    }
+    if (!insert_ir_parts)
+      printf("[GENERATE] skipped IR parts[] (catalogue-owned binding)\n");
   }
 
   if (compiler_compile_from_design(db, topology_name, design_json, &schematic) !=

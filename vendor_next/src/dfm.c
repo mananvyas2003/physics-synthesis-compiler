@@ -134,10 +134,150 @@ static int check_invalid_dimensions(const Design *design,
   return errors;
 }
 
+/* Typical SMD body short-side (mm); used vs profile clearance/trace. */
+static double package_body_short_mm(const char *package) {
+  if (!package || !package[0])
+    return 0.0;
+  if (strcmp(package, "0402") == 0)
+    return 0.5;
+  if (strcmp(package, "0603") == 0)
+    return 0.8;
+  if (strcmp(package, "0805") == 0)
+    return 1.25;
+  if (strcmp(package, "1206") == 0)
+    return 1.6;
+  return 0.0;
+}
+
+static double package_typical_pad_mm(const char *package) {
+  if (!package || !package[0])
+    return 0.0;
+  if (strcmp(package, "0402") == 0)
+    return 0.5;
+  if (strcmp(package, "0603") == 0)
+    return 0.8;
+  if (strcmp(package, "0805") == 0)
+    return 1.0;
+  if (strcmp(package, "1206") == 0)
+    return 1.2;
+  return 0.0;
+}
+
+/* Profile numerical fields must be positive and geometrically consistent. */
+static int check_profile_consistency(const Design *design,
+                                     const DfmProfile *profile,
+                                     DiagnosticList *out) {
+  int errors = 0;
+  double via_need;
+
+  (void)design;
+  if (!profile || !out)
+    return -1;
+
+  if (profile->layer_count < 1 || profile->layer_count > 16) {
+    if (diagnostic_add(out, DIAGNOSTIC_ERROR, DIAG_TARGET_DESIGN,
+                       DIAGNOSTIC_INVALID_ID, "profile_layer_count",
+                       "layer_count %u out of range [1,16]",
+                       (unsigned)profile->layer_count) != 0)
+      return -1;
+    errors++;
+  }
+  if (profile->min_trace_width_mm <= 0.0) {
+    if (diagnostic_add(out, DIAGNOSTIC_ERROR, DIAG_TARGET_DESIGN,
+                       DIAGNOSTIC_INVALID_ID, "profile_trace_width",
+                       "min_trace_width_mm must be > 0 (got %.4f)",
+                       profile->min_trace_width_mm) != 0)
+      return -1;
+    errors++;
+  }
+  if (profile->min_clearance_mm <= 0.0) {
+    if (diagnostic_add(out, DIAGNOSTIC_ERROR, DIAG_TARGET_DESIGN,
+                       DIAGNOSTIC_INVALID_ID, "profile_clearance",
+                       "min_clearance_mm must be > 0 (got %.4f)",
+                       profile->min_clearance_mm) != 0)
+      return -1;
+    errors++;
+  }
+  if (profile->min_drill_mm <= 0.0 || profile->min_via_diameter_mm <= 0.0) {
+    if (diagnostic_add(out, DIAGNOSTIC_ERROR, DIAG_TARGET_DESIGN,
+                       DIAGNOSTIC_INVALID_ID, "profile_via_drill",
+                       "min_via/drill must be > 0 (via=%.4f drill=%.4f)",
+                       profile->min_via_diameter_mm, profile->min_drill_mm) != 0)
+      return -1;
+    errors++;
+  }
+  via_need = profile->min_drill_mm + 2.0 * profile->min_annular_ring_mm;
+  if (profile->min_annular_ring_mm > 0.0 &&
+      profile->min_via_diameter_mm + 1e-9 < via_need) {
+    if (diagnostic_add(out, DIAGNOSTIC_ERROR, DIAG_TARGET_DESIGN,
+                       DIAGNOSTIC_INVALID_ID, "profile_annular_ring",
+                       "min_via_diameter_mm %.4f < drill+2*annular %.4f",
+                       profile->min_via_diameter_mm, via_need) != 0)
+      return -1;
+    errors++;
+  }
+  if (profile->board_edge_clearance_mm < 0.0) {
+    if (diagnostic_add(out, DIAGNOSTIC_ERROR, DIAG_TARGET_DESIGN,
+                       DIAGNOSTIC_INVALID_ID, "profile_board_edge",
+                       "board_edge_clearance_mm must be >= 0 (got %.4f)",
+                       profile->board_edge_clearance_mm) != 0)
+      return -1;
+    errors++;
+  }
+
+  return errors;
+}
+
+/*
+ * Without PCB layout, compare known package body/pad sizes to profile
+ * clearance and trace limits (stubs that actually consume profile numbers).
+ */
+static int check_package_vs_profile(const Design *design,
+                                    const DfmProfile *profile,
+                                    DiagnosticList *out) {
+  int errors = 0;
+
+  if (!design || !profile || !out)
+    return -1;
+
+  for (size_t i = 0; i < vec_len(design->components); ++i) {
+    const Component *component = &design->components[i];
+    double body = package_body_short_mm(component->package);
+    double pad = package_typical_pad_mm(component->package);
+
+    if (body > 0.0 && profile->min_clearance_mm > body) {
+      if (diagnostic_add(
+              out, DIAGNOSTIC_ERROR, DIAG_TARGET_COMPONENT, (uint32_t)i,
+              "clearance_vs_package",
+              "%s package %s body %.3f mm < min_clearance_mm %.3f",
+              component->reference,
+              component->package ? component->package : "?", body,
+              profile->min_clearance_mm) != 0)
+        return -1;
+      errors++;
+    }
+    if (pad > 0.0 && profile->min_trace_width_mm > pad) {
+      if (diagnostic_add(
+              out, DIAGNOSTIC_ERROR, DIAG_TARGET_COMPONENT, (uint32_t)i,
+              "trace_vs_package",
+              "%s package %s pad ~%.3f mm < min_trace_width_mm %.3f",
+              component->reference,
+              component->package ? component->package : "?", pad,
+              profile->min_trace_width_mm) != 0)
+        return -1;
+      errors++;
+    }
+  }
+
+  return errors;
+}
+
 static const DfmRule BUILTIN_RULES[] = {
     {"floating_pin", check_no_floating_pins},
     {"missing_footprint", check_missing_footprints},
-    {"component_height", check_invalid_dimensions}};
+    {"component_height", check_invalid_dimensions},
+    {"profile_consistency", check_profile_consistency},
+    {"package_vs_profile", check_package_vs_profile}};
 
 int dfm_registry_init(DfmRegistry *registry) {
   if (!registry) {

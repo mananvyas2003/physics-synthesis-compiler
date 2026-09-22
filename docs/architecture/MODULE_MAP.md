@@ -91,7 +91,7 @@ Third-party amalgams (`sqlite3`, `cJSON`) summarized once.
 |------|------|------|-------|
 | bind_scorer | closest part + derating | fake MPN cost; DUP part_provider | Q |
 | compiler | bind + KiCad emit + unused Physics2 lower | KiCad in Q; IR bind hints | Q+T |
-| seed_topology | JSON→DB | may insert fixture parts[] | E/P |
+| seed_topology | JSON→DB | insert_ir_parts gated (catalogue / SYNTH_ALLOW_IR_PARTS) | E/P |
 
 ### `unit_parse.c` / `diag_error.c`
 | CLASS | RESP |
@@ -118,7 +118,8 @@ Third-party amalgams (`sqlite3`, `cJSON`) summarized once.
 |------|------|-------|
 | compose/* | Gate4 expand | E |
 | dfm_compose | port V/I/Z | R |
-| mfg_dfm + vendor_bridge | mfg DFM adapter | R |
+| mfg_dfm + vendor_bridge | mfg DFM adapter; profile + package rules | R |
+| dfm.c (vendor) | floating/footprint/height/profile/package_vs | R |
 | vendor dfm | 3 rules | R |
 
 ---
@@ -127,7 +128,7 @@ Third-party amalgams (`sqlite3`, `cJSON`) summarized once.
 
 | File | RESP | MATH | CLASS |
 |------|------|------|-------|
-| verify_report | verification.v1 | LED/RC/RL analytical; Physics2 DC; IC fail-closed | S |
+| verify_report | verification.v1 | LED analytical; diode Physics2 Newton; IC fail-closed | S |
 | emit_* | net/bom/snapshot | none | T |
 
 ---
