@@ -1,7 +1,0 @@
-{
-	"schema":	"verification.v1",
-	"analysis":	"rl_cutoff_analytical",
-	"passed":	true,
-	"cutoff_hz":	159154943.09189531,
-	"summary":	"RL low-pass fc=1.59e+08 Hz (R=1e+04 L=1e-05); result=PASS"
-}

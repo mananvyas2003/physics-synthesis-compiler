@@ -38,6 +38,10 @@ DEFAULT_DFM = ROOT / "fixtures" / "dfm" / "standard.json"
 HOST = os.environ.get("SYNTH_WEB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SYNTH_WEB_PORT", "8765"))
 
+# Async generate jobs: web request must not be the lifetime of synth.
+_JOBS: dict[str, dict] = {}
+_JOBS_LOCK = threading.Lock()
+
 
 def load_dotenv(path: Path) -> None:
     if not path.is_file():
@@ -403,17 +407,56 @@ def run_generate(prompt: str) -> dict:
         "ok": ok,
         "run_id": run_id,
         "live": True,
-        "exit_code": proc.returncode,
-        "stdout": proc.stdout[-4000:],
-        "stderr": proc.stderr[-4000:],
+        "summary": summary,
+        "verification_summary": summary,
         "artifacts": artifacts,
         "artifact_contents": artifact_contents,
-        "verification_summary": summary,
         "catalogue": catalogue_status(),
-        "error": None
-        if ok
-        else (proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"),
+        "stdout": (proc.stdout or "")[-4000:],
+        "stderr": (proc.stderr or "")[-4000:],
+        "error": None if ok else ((proc.stderr or proc.stdout or "generate failed")[-2000:]),
     }
+
+
+def _job_set(job_id: str, **fields: object) -> None:
+    with _JOBS_LOCK:
+        job = _JOBS.setdefault(job_id, {})
+        job.update(fields)
+
+
+def start_generate_job(prompt: str) -> dict:
+    """Enqueue generate on a worker thread; return job_id immediately."""
+    job_id = uuid.uuid4().hex
+
+    def worker() -> None:
+        _job_set(job_id, status="running", started_at=time.time())
+        try:
+            result = run_generate(prompt)
+            _job_set(
+                job_id,
+                status="done" if result.get("ok") else "error",
+                finished_at=time.time(),
+                result=result,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _job_set(
+                job_id,
+                status="error",
+                finished_at=time.time(),
+                result={"ok": False, "error": str(exc)},
+            )
+
+    _job_set(job_id, status="queued", prompt=prompt[:200], created_at=time.time())
+    threading.Thread(target=worker, daemon=True).start()
+    return {"ok": True, "job_id": job_id, "status": "queued"}
+
+
+def get_generate_job(job_id: str) -> dict | None:
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if not job:
+            return None
+        return dict(job)
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -477,6 +520,17 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if resolved in ("/api/catalogue", "/catalogue"):
             self._json(200, catalogue_status())
+            return
+        if resolved.startswith("/api/jobs/"):
+            job_id = resolved.split("/api/jobs/", 1)[-1].strip("/")
+            if not re.fullmatch(r"[A-Fa-f0-9]{16,64}", job_id):
+                self._json(400, {"ok": False, "error": "invalid job_id"})
+                return
+            job = get_generate_job(job_id)
+            if not job:
+                self._json(404, {"ok": False, "error": "job not found"})
+                return
+            self._json(200, {"ok": True, "job_id": job_id, **job})
             return
         if self.path in ("/", "/index.html"):
             self.path = "/index.html"
@@ -549,6 +603,24 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             result = save_dfm_profile(raw)
             self._json(200 if result.get("ok") else 400, result)
+            return
+
+        if resolved in ("/api/generate", "/generate"):
+            if not raw:
+                raw = b"{}"
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except json.JSONDecodeError:
+                self._json(400, {"ok": False, "error": "invalid JSON"})
+                return
+            prompt = (payload.get("prompt") or "").strip()
+            if not prompt:
+                self._json(400, {"ok": False, "error": "prompt required"})
+                return
+            if len(prompt) > 8000:
+                self._json(400, {"ok": False, "error": "prompt too long"})
+                return
+            self._json(202, start_generate_job(prompt))
             return
 
         if resolved not in ("/api/chat", "/chat", "/api/index.py", "/api/index", "/api"):

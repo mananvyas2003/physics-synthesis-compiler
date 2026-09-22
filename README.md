@@ -4,9 +4,9 @@ C11 engineering synthesis / Physics2 runtime + teammate engineering core
 ([electronics_vendor_v2_next](https://github.com/Abheesht04/electronics_vendor_v2_next)).
 External surface: CLI + JSON fixtures + chat UI.
 
-**Phase 0 audit (2026-09-21):** full mathematical / architectural review — see [AUDIT_README.md](AUDIT_README.md) and [AUDIT_REPORT.md](AUDIT_REPORT.md).
+**Phase 0 audit (2026-09-21):** see [AUDIT_README.md](AUDIT_README.md) and [AUDIT_REPORT.md](AUDIT_REPORT.md).
 
-**Phase 1 (started):** Physics2 frozen as live MNA ([docs/math/MNA_CONTRACT.md](docs/math/MNA_CONTRACT.md)); IC/transistor verify fail-closed; Gemini must not invent MPNs (`parts: []`); vendor `mna_validate` voltage residual units fixed.
+**Phase 1:** Physics2 Shockley diode Newton + g22; IC fail-closed; Gemini `parts: []`; async `POST /api/generate` + `GET /api/jobs/{id}`; audit depth docs (`REFERENCE_ORACLE`, `TEST_MATRIX`, `OPTIMIZATION`, `AC_DAE_SPARSE`); SAFE DELETE of tracked binaries/`out_*`.
 
 ## Architecture
 

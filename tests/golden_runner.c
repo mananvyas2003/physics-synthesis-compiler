@@ -100,6 +100,11 @@ static int run_g21(FILE *out, const char *fixture_root) {
   return golden_g21_ldo_3v3(out, fixture_root);
 }
 
+static int run_g22(FILE *out, const char *fixture_root) {
+  (void)fixture_root;
+  return golden_g22_diode_newton(out);
+}
+
 static char *read_file(const char *path) {
   FILE *fp;
   long size;
@@ -254,6 +259,8 @@ int main(int argc, char **argv) {
        run_g19},
       {"g20_rl_low_pass", "tests/golden/g20_rl_low_pass/expected.txt", run_g20},
       {"g21_ldo_3v3", "tests/golden/g21_ldo_3v3/expected.txt", run_g21},
+      {"g22_diode_newton", "tests/golden/g22_diode_newton/expected.txt",
+       run_g22},
   };
   size_t i;
   int failures = 0;

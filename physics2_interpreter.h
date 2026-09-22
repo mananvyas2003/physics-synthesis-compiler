@@ -51,11 +51,9 @@ typedef struct {
 } PhysicsControlledSource;
 
 /*
- * Diode model data only.
- *
- * A correct Shockley linearization requires residual/Jacobian
- * (or equivalent) support from the runtime. Until that ABI
- * exists, stamp() must fail as unsupported-nonlinear.
+ * Diode model — Shockley constitutive law.
+ * Stamp provides local linearization (Gd, Ieq); global Newton lives in
+ * physics2_context_step when any PHYS_PRIM_DIODE is present.
  */
 typedef struct {
   PhysicsValue isat;

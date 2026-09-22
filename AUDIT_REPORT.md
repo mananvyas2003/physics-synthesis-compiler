@@ -2,16 +2,21 @@
 
 **Date:** 2026-09-21  
 **Scope:** Full mathematical, semantic, architectural, build, and code-quality audit.  
-**Phase 0:** documentation + clean compile/test only.  
-**Phase 1 (in progress):** Physics2 live contract frozen; verify fail-closed for IC/transistor; Gemini `parts: []`; `mna_validate` voltage residual fix. See [docs/math/MNA_CONTRACT.md](docs/math/MNA_CONTRACT.md).
+**Phase 0:** documentation + clean compile/test.  
+**Phase 1 (2026-09-22):** Physics2 diode Newton (g22); fail-closed IC; Gemini `parts:[]`; async jobs; full MODULE_MAP/oracle/test/optimization/AC-DAE docs; SAFE DELETE artifacts. See [AUDIT_README.md](AUDIT_README.md).
 
 Detailed companions:
 
-- [AUDIT_README.md](AUDIT_README.md) — features, module map, tests, bugs, C notes  
-- [docs/math/MNA_AUDIT.md](docs/math/MNA_AUDIT.md)  
-- [docs/architecture/ARCHITECTURE_AUDIT.md](docs/architecture/ARCHITECTURE_AUDIT.md)  
-- [docs/architecture/MODULE_MAP.md](docs/architecture/MODULE_MAP.md) — per-file module map  
-- [docs/architecture/CLEANUP_REPORT.md](docs/architecture/CLEANUP_REPORT.md)  
+- [AUDIT_README.md](AUDIT_README.md)
+- [docs/math/MNA_AUDIT.md](docs/math/MNA_AUDIT.md)
+- [docs/math/MNA_CONTRACT.md](docs/math/MNA_CONTRACT.md)
+- [docs/math/REFERENCE_ORACLE.md](docs/math/REFERENCE_ORACLE.md)
+- [docs/math/TEST_MATRIX.md](docs/math/TEST_MATRIX.md)
+- [docs/math/OPTIMIZATION.md](docs/math/OPTIMIZATION.md)
+- [docs/math/AC_DAE_SPARSE.md](docs/math/AC_DAE_SPARSE.md)
+- [docs/architecture/ARCHITECTURE_AUDIT.md](docs/architecture/ARCHITECTURE_AUDIT.md)
+- [docs/architecture/MODULE_MAP.md](docs/architecture/MODULE_MAP.md)
+- [docs/architecture/CLEANUP_REPORT.md](docs/architecture/CLEANUP_REPORT.md)
 - [docs/build/BUILD_AUDIT.md](docs/build/BUILD_AUDIT.md)
 
 ---

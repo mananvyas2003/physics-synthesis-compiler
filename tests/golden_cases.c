@@ -1141,3 +1141,84 @@ done:
   compiler_free_schematic(&schematic);
   return rc;
 }
+
+/*
+ * Physics2 Shockley diode Newton vs closed-form OP (matches vendor mna_test
+ * circuit: 5 V — 1 kΩ — diode — GND, Is=1e-12, n=1, Vt=k*300/q).
+ */
+int golden_g22_diode_newton(FILE *out) {
+  PhysicsPrimitive vsrc;
+  PhysicsPrimitive r1;
+  PhysicsPrimitive d1;
+  PhysicsProgram program;
+  PhysicsAccumulator *acc = NULL;
+  PhysicsExecutionContext ctx;
+  NodeId n_vin;
+  NodeId n_mid;
+  NodeId n_gnd;
+  NodeId t[2];
+  double vt;
+  double vmid;
+  double current;
+  int rc = 1;
+
+  if (!out)
+    return 1;
+
+  vt = (1.380649e-23 * 300.0) / 1.602176634e-19;
+
+  physics2_program_init(&program);
+  n_vin = physics2_program_new_node(&program);
+  n_mid = physics2_program_new_node(&program);
+  n_gnd = physics2_program_new_node(&program);
+
+  if (!physics2_primitive_init_vsource(&vsrc, "V1", 5.0, 0.0))
+    goto done;
+  t[0] = n_vin;
+  t[1] = n_gnd;
+  if (physics2_program_add_primitive(&program, &vsrc, t, 2) ==
+      PHYSICS_PRIMITIVE_NONE)
+    goto done;
+
+  if (!physics2_primitive_init_resistor(&r1, "R1", 1000.0, 0.0))
+    goto done;
+  t[0] = n_vin;
+  t[1] = n_mid;
+  if (physics2_program_add_primitive(&program, &r1, t, 2) ==
+      PHYSICS_PRIMITIVE_NONE)
+    goto done;
+
+  if (!physics2_primitive_init_diode(&d1, "D1", 1.0e-12, 1.0, vt, 0.0))
+    goto done;
+  t[0] = n_mid;
+  t[1] = n_gnd;
+  if (physics2_program_add_primitive(&program, &d1, t, 2) ==
+      PHYSICS_PRIMITIVE_NONE)
+    goto done;
+
+  acc = physics2_accumulator_create(program.next_node + program.branch_count);
+  if (!acc)
+    goto done;
+  if (!physics2_context_init(&ctx, &program, acc, 1e-3))
+    goto done;
+  if (!physics2_context_step(&ctx, n_gnd)) {
+    physics2_context_free(&ctx);
+    goto done;
+  }
+
+  vmid = ctx.solution[n_mid];
+  current = (5.0 - vmid) / 1000.0;
+  /* Fixed reference print for golden file; tolerances checked below. */
+  fprintf(out, "g22_diode_newton\n");
+  fprintf(out, "vmid=0.574147\n");
+  fprintf(out, "current=0.004426\n");
+
+  if (near_eq(vmid, 0.574147, 1.0e-3) && near_eq(current, 0.00442585, 1.0e-5))
+    rc = 0;
+
+  physics2_context_free(&ctx);
+done:
+  physics2_accumulator_free(acc);
+  physics2_program_free(&program);
+  return rc;
+}

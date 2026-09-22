@@ -30,6 +30,7 @@ int golden_g18_rc_low_pass(FILE *out, const char *fixture_root);
 int golden_g19_invalid_role(FILE *out, const char *fixture_root);
 int golden_g20_rl_low_pass(FILE *out, const char *fixture_root);
 int golden_g21_ldo_3v3(FILE *out, const char *fixture_root);
+int golden_g22_diode_newton(FILE *out);
 
 #ifdef __cplusplus
 }

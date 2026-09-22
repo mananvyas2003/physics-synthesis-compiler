@@ -36,7 +36,7 @@ Ideal V-source: \(V_+ - V_- = V_s\); branch current unknown enters \(+\) node as
 | Ideal V (injected for VIN/GND) | yes |
 | C / L | BE when stepped; DC verify omits C (open) |
 | I, controlled sources | stamped in ISA; not yet built from `CompiledSchematic` |
-| Diode | LED uses **analytical** verify today; Physics2 stamp unsupported |
+| Diode | LED analytical **or** Physics2 Newton (g22); stamp companion |
 | BJT / MOS / IC | **fail-closed** (unsupported) |
 
 ---

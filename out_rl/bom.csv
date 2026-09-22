@@ -1,3 +1,0 @@
-refdes,value,package,MPN,JLCPCB,quantity,rationale,alternate_mpn,unit_cost
-R1,10000,0603,DEMO-10K-0603-A,DEMO-10K-0603-A,1,selected DEMO-10K-0603-A err=0% derate V>=10 P>=0.005; candidates=1,,0.01
-L1,1e-05,0603,DEMO-10U-0603-A,DEMO-10U-0603-A,1,selected DEMO-10U-0603-A err=0% derate V>=10 P>=0; candidates=1,,0.01

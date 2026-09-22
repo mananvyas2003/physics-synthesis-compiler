@@ -1,0 +1,3 @@
+g22_diode_newton
+vmid=0.574147
+current=0.004426

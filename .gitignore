@@ -1,5 +1,6 @@
 /build/
 /build-asan/
+/audit_build/
 /*.o
 /*.exe
 /*.db
@@ -18,10 +19,10 @@ gemini_resp.json
 /out_local/
 /out_demo/
 /out_live/
+/out_*/
 /user_data/
 
 .vercel
 
 vendor_next/build-gcc/
 vendor_next/build/
-

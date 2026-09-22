@@ -1,327 +1,196 @@
-# Module Map — Phase 0
+# Module Map — Full Dossiers (Phase 0+ completion)
 
-Per-file map for first-party sources (synth + vendor_next + tests).  
-Third-party amalgams (`sqlite3`, `cJSON`) summarized only.  
-Classes: A CLI, B NLP/LLM, C Spec, D Eng language, E Topology, F Physical model, G Physics IR, H Physics ISA, I Runtime, J Assembly, K Linear solver, L Nonlinear, M Dynamic, N AC, O Device lib, P DB, Q Binding, R DFM, S Verify, T KiCad, U PCB, V Web, W Tests, X Infra.
+Field legend for every first-party module:
 
-Legend fields: RESP / IN / OUT / API / DEPS / DEPENDENTS / STATE / MATH / COMPILER / RUNTIME / TESTS / DUP / DEAD / LEAK / REC
+- **FILE / RESPONSIBILITY / INPUTS / OUTPUTS / PUBLIC API / DEPENDENCIES / DEPENDENTS**
+- **STATE OWNERSHIP / MATHEMATICAL ROLE / COMPILER ROLE / RUNTIME ROLE**
+- **TEST COVERAGE / DUPLICATE / DEAD CODE / SEMANTIC LEAKS / RECOMMENDATION**
+- **CLASS** A–X (see ARCHITECTURE_AUDIT)
 
----
-
-## Entry / CLI
-
-### `main.c` — A
-- **RESP:** argv dispatch to CLI commands  
-- **IN:** argc/argv  
-- **OUT:** exit code  
-- **API:** `main`  
-- **DEPS:** `cli.h`  
-- **DEPENDENTS:** none  
-- **STATE:** none  
-- **MATH/COMPILER/RUNTIME:** none  
-- **TESTS:** indirect via golden subprocess  
-- **DUP/DEAD/LEAK:** none  
-- **REC:** keep thin  
-
-### `cli/cli.h` — A
-- **RESP:** command declarations + shared helpers  
-- **API:** `cmd_*`, `cli_*` helpers  
-- **DEPS:** std headers  
-- **REC:** keep  
-
-### `cli/cli_common.c` — A/X
-- **RESP:** path join, fixture root, file helpers  
-- **DEPENDENTS:** compose, golden, cmd_*  
-- **LEAK:** compose depends on CLI for paths  
-- **REC:** move fixture root to X helper later  
-
-### `cli/cmd_generate.c` — A
-- **RESP:** full generate orchestration  
-- **IN:** design/prompt/spec/compose flags  
-- **OUT:** work DB + sch/net/bom/snapshot/verify/dfm/manifest  
-- **DEPS:** compiler, seed, verify, mfg_dfm, emit, spec, compose  
-- **LEAK:** Gate5 cost special-case `resistor_divider`  
-- **REC:** keep as orchestrator  
-
-### `cli/cmd_compile.c` — A/T
-- **RESP:** legacy divider compile → `.kicad_sch`  
-- **DEAD-ish:** superseded by generate  
-- **REC:** deprecate after review  
-
-### `cli/cmd_db.c` — A/P
-- **RESP:** import/seed/inspect SQLite  
-- **DEPS:** db, jlcparts_import, catalogue, seed  
-
-### `cli/cmd_dfm.c` — A/R/W
-- **RESP:** block-compose DFM self-checks  
-- **DEPS:** `dfm_compose`  
-
-### `cli/cmd_physics2.c` — A
-- **RESP:** stub pointing at ctest  
-- **REC:** wire real Physics2 demos or remove later  
+Third-party amalgams (`sqlite3`, `cJSON`) summarized once.
 
 ---
 
-## Database / catalogue / import
+## A — CLI
 
-### `db.c` / `db.h` — P
-- **RESP:** SQLite Parts, FabRules, Topology*  
-- **IN:** SQL ops  
-- **OUT:** `DBPart`, topology rows  
-- **STATE:** owns `sqlite3*`  
-- **LEAK:** physics + procurement + ratings in one `Parts` row; NULL→0  
-- **TESTS:** via generate goldens  
-- **REC:** split schema long-term  
+### `main.c`
+| Field | Value |
+|-------|-------|
+| RESPONSIBILITY | Dispatch argv to CLI commands |
+| INPUTS | argc/argv |
+| OUTPUTS | process exit code |
+| PUBLIC API | `main` |
+| DEPENDENCIES | `cli.h` |
+| DEPENDENTS | none |
+| STATE | none |
+| MATH / COMPILER / RUNTIME | none |
+| TESTS | indirect via golden generate |
+| DUP / DEAD / LEAK | none |
+| REC | keep thin |
+| CLASS | A |
 
-### `catalogue.c` / `catalogue.h` — P
-- **RESP:** E-series part generators + SeedFabRules  
-- **DEAD:** GenerateE24/E96/E6* unused callers  
-- **DUP:** vs `vendor_next/e_series.c`  
-- **REC:** wire or LIKELY DELETE generators  
+### `cli/cli.h`, `cli/cli_common.c`
+| Field | Value |
+|-------|-------|
+| RESPONSIBILITY | Command decls; path/fixture helpers |
+| INPUTS | paths, env |
+| OUTPUTS | joined paths, fixture root |
+| PUBLIC API | `cmd_*`, `cli_join_path`, `cli_fixture_root` |
+| DEPENDENCIES | stdio/stdlib |
+| DEPENDENTS | all cmd_*, compose, golden |
+| STATE | none (fixture root from env/cwd) |
+| LEAK | compose depends on CLI for paths |
+| REC | extract fixture helper to X later |
+| CLASS | A/X |
 
-### `jlcparts_import.c` / `.h` — P
-- **RESP:** JLCPCB CSV → Parts  
-- **LEAK:** polymorphic `value` (Vr for diodes)  
-- **TESTS:** manual/db import  
+### `cli/cmd_generate.c`
+| Field | Value |
+|-------|-------|
+| RESPONSIBILITY | Full generate orchestration |
+| INPUTS | design JSON / prompt / spec / compose flags |
+| OUTPUTS | work DB, sch, net, bom, snapshot, verify, dfm, manifest |
+| PUBLIC API | `cmd_generate` |
+| DEPENDENCIES | compiler, seed, verify, mfg_dfm, emit, spec, compose |
+| STATE | owns work DB lifetime |
+| LEAK | Gate5 cost special-case name |
+| CLASS | A |
 
-### `part_lib.c` / `.h` — O/Q
-- **RESP:** static type registry pins/defaults/KiCad ids  
-- **LEAK:** `part_lib_kicad_id` enum collapse diode→LED  
-- **DEPENDENTS:** compiler, seed, schematic_load  
-
----
-
-## Bind / compile / seed
-
-### `bind/bind_scorer.c` / `.h` — Q
-- **RESP:** scored closest part + derating + fake cost  
-- **IN:** target value/package/ratings floors  
-- **OUT:** `DBPart` choice + rationale  
-- **DUP:** vs vendor `part_provider` (unused on generate)  
-- **LEAK:** MPN substring cost  
-
-### `compiler.c` / `compiler.h` — Q+T (+ dead G)
-- **RESP:** topology→`CompiledSchematic`; KiCad sch emit; Physics2 lower API  
-- **STATE:** allocates components  
-- **DEAD:** `compiler_lower_to_physics2` unused by generate  
-- **LEAK:** KiCad in compiler; defaults 10k/0603; bind hints from IR  
-- **REC:** split emit; wire or drop lowering  
-
-### `seed/seed_topology.c` / `.h` — E/P
-- **RESP:** JSON IR → Parts + Topology tables  
-- **LEAK:** inserts LLM `parts[]` as catalogue rows  
-- **REC:** stop seeding MPNs from IR  
-
-### `unit_parse.c` / `.h` — X/D-lite
-- **RESP:** engineering unit strings → double  
-
-### `diag_error.c` / `.h` — X
-- **RESP:** process-global last error string  
-- **STATE:** single buffer (CLI single-thread)  
+### `cli/cmd_compile.c` / `cmd_db.c` / `cmd_dfm.c` / `cmd_physics2.c`
+| File | RESP | CLASS | REC |
+|------|------|-------|-----|
+| cmd_compile | Legacy divider→sch | A/T | deprecate |
+| cmd_db | import/seed/inspect | A/P | keep |
+| cmd_dfm | block DFM self-test | A/R/W | keep |
+| cmd_physics2 | stub → ctest | A | wire demos or drop |
 
 ---
 
-## Spec / LLM
+## P/Q — DB, catalogue, bind, part_lib
 
-### `spec/schematic_load.c` / `.h` — C/B
-- **RESP:** load/validate schematic-ir; route prompt→Gemini|offline  
-- **OUT:** validated IR path  
+### `db.c` / `db.h`
+| Field | Value |
+|-------|-------|
+| RESPONSIBILITY | SQLite Parts, FabRules, Topology* |
+| INPUTS | SQL CRUD |
+| OUTPUTS | `DBPart`, topology rows |
+| STATE | owns `sqlite3*` in `DB` |
+| MATH | none |
+| LEAK | physics+procurement+ratings one row; NULL→0 |
+| TESTS | generate goldens |
+| CLASS | P |
 
-### `spec/gemini_schematic.c` / `.h` — B
-- **RESP:** curl Gemini → IR JSON  
-- **LEAK:** recipes + DEMO MPNs in system prompt  
-- **RUNTIME:** not linked into solvers  
+### `catalogue.c` / `jlcparts_import.c` / `part_lib.c`
+| File | RESP | DEAD/DUP | CLASS |
+|------|------|----------|-------|
+| catalogue | E-series generators | GenerateE* mostly unused; DUP e_series | P |
+| jlcparts_import | CSV→Parts | polymorphic value | P |
+| part_lib | type→pins/KiCad | enum kicad_id collapse | O/Q |
 
-### `spec/spec_load.c` / `.h` — C
-- **RESP:** SpecV1 validate → fixture design path  
+### `bind/bind_scorer.c` / `compiler.c` / `seed/seed_topology.c`
+| File | RESP | LEAK | CLASS |
+|------|------|------|-------|
+| bind_scorer | closest part + derating | fake MPN cost; DUP part_provider | Q |
+| compiler | bind + KiCad emit + unused Physics2 lower | KiCad in Q; IR bind hints | Q+T |
+| seed_topology | JSON→DB | may insert fixture parts[] | E/P |
 
-### `spec/llm_provider.c` / `.h` — C
-- **RESP:** offline prompt→spec file map  
-- **DUP name:** not an LLM  
-- **REC:** rename  
-
----
-
-## Compose / DFM host
-
-### `compose/compose.c` / `.h` — E
-- **RESP:** Gate4 block list, port auto-connect, expand to IR  
-- **HARDCODE:** fixed five-block scenario  
-- **LEAK:** depends on cli fixture root  
-
-### `dfm_compose.c` / `.h` — R
-- **RESP:** port kind + V/I/Z compatibility (was `DFM.*`)  
-- **DUP name history:** vs vendor `dfm.h`  
-- **TESTS:** g04, cmd_dfm  
-
-### `mfg_dfm.c` / `.h` — R
-- **RESP:** profiles + call vendor DFM  
-- **DUP:** profile constants vs fixtures vs vendor defaults  
-
-### `vendor_bridge.c` / `.h` — R/Q
-- **RESP:** `CompiledSchematic` → vendor `Design` → `dfm_run_all`  
-- **LEAK:** forces resistor-ish models; invents 50 V / 5 V ratings  
+### `unit_parse.c` / `diag_error.c`
+| CLASS | RESP |
+|-------|------|
+| X/D-lite | SI parse |
+| X | last-error buffer |
 
 ---
 
-## Verify / emit
+## B/C — Spec / LLM
 
-### `verify/verify_report.c` / `.h` — S
-- **RESP:** bound schematic → `verification.v1.json`  
-- **MATH:** LED/RC/RL analytical; else Physics2 DC; IC/xstr structural pass  
-- **LEAK:** auto-pass IC/transistor  
-- **TESTS:** g12, g17–g21  
-
-### `emit/emit.h` — T
-- **RESP:** emit API declarations  
-
-### `emit/emit_bom.c` — T
-- **OUT:** `bom.csv`  
-
-### `emit/emit_netlist.c` — T
-- **OUT:** legacy `.net` (Device/R-centric)  
-
-### `emit/emit_snapshot.c` — T/S-adj
-- **OUT:** `design-snapshot.v1.json`  
+| File | RESP | CLASS | LEAK |
+|------|------|-------|------|
+| schematic_load | IR validate; prompt route | C/B | power-net checks |
+| gemini_schematic | curl→IR | B | was MPN invent; now `parts:[]` |
+| spec_load | SpecV1 | C | — |
+| llm_provider | offline prompt map | C | misleading name |
 
 ---
 
-## Physics2
+## E/R — Compose / DFM
 
-### `physics2_isa.c` / `.h` — H
-- **RESP:** opcodes, instruction struct, param/state pools  
-- **DEAD runtime:** pools unused by stamps  
-- **REC:** stamps should read pools  
-
-### `physics2_interpreter.c` / `.h` — I/J/K/M
-- **RESP:** accumulator, stamps, dense GE, BE C/L, step  
-- **MATH:** linear MNA; diode/BJT/MOS/logic return false  
-- **STATE:** context solution + device history arrays  
-- **TESTS:** g01–g03, g12  
-
-### `physics2_types.c` / `.h` — G
-- **RESP:** quantity/expr sketches  
-- **RUNTIME:** not live generate MNA path  
-
-### `physics2_symbols.c` / `.h` — G
-- **RESP:** symbol table for expr IR  
-
-### `physics2_typecheck.c` / `.h` — G
-- **RESP:** typecheck helpers  
-
-### `physics2_print.c` / `.h` — G
-- **RESP:** debug print  
+| File | RESP | CLASS |
+|------|------|-------|
+| compose/* | Gate4 expand | E |
+| dfm_compose | port V/I/Z | R |
+| mfg_dfm + vendor_bridge | mfg DFM adapter | R |
+| vendor dfm | 3 rules | R |
 
 ---
 
-## Vendor next (`electronics_core`)
+## S/T — Verify / emit
 
-### `vendor_next/src/mna.c` / `mna.h` — F/J/K/L
-- **RESP:** dense DC MNA; R/V/diode; Newton  
-- **MATH:** Shockley + companion; GE partial pivot  
-- **TESTS:** `mna_test` PASS  
-- **DEAD:** `matrix_node_entry` unused  
-- **REC:** KEEP; candidate live verify backend  
-
-### `vendor_next/src/dfm.c` / `dfm.h` — R
-- **RESP:** floating_pin, missing_footprint, component_height  
-- **MATH:** height only numerical  
-- **TESTS:** `dfm_test`  
-
-### `vendor_next/src/design.c` / `design.h` — E
-- **RESP:** Design container components/nets  
-
-### `vendor_next/src/component.c` / `component.h` — O/E
-- **RESP:** component instances, pins, footprints  
-
-### `vendor_next/src/net.c` / `net.h` — E
-- **RESP:** net objects  
-
-### `vendor_next/src/component_model.c` / `.h` — O
-- **RESP:** catalog electrical/physical model structs  
-- **MATH:** **not** device equations  
-
-### `vendor_next/src/model_registry.c` / `.h` — O
-- **RESP:** register/lookup models  
-
-### `vendor_next/src/part_provider.c` / `.h` — Q
-- **RESP:** part search interface  
-- **DEAD on generate:** unused  
-
-### `vendor_next/src/kicad_generic_provider.c` — Q/T-adj
-- **RESP:** generic KiCad-oriented provider  
-- **REC:** KEEP FOR FUTURE  
-
-### `vendor_next/src/e_series.c` / `.h` — X
-- **RESP:** E-series snap  
-- **DEAD on generate:** linked unused  
-
-### `vendor_next/src/vec.c` / `.h` — X
-- **RESP:** dynamic array  
-
-### `vendor_next/src/intern.c` / `.h` — X
-- **RESP:** string interning  
-
-### `vendor_next/src/range.c` / `.h` — X
-- **RESP:** numeric ranges  
-
-### `vendor_next/src/constraint.c` / `.h` — X/D-adj
-- **RESP:** constraint helpers  
-
-### `vendor_next/src/diagnostic.c` / `.h` — X
-- **RESP:** diagnostic messages  
-
-### `vendor_next/src/PartIdentity.h` — —
-- **RESP:** duplicate PartRequest  
-- **DEAD:** never included  
-- **REC:** SAFE DELETE  
+| File | RESP | MATH | CLASS |
+|------|------|------|-------|
+| verify_report | verification.v1 | LED/RC/RL analytical; Physics2 DC; IC fail-closed | S |
+| emit_* | net/bom/snapshot | none | T |
 
 ---
 
-## Tests
+## G/H/I/J/K/M — Physics2
 
-### `tests/golden_runner.c` / `golden_cases.c` / `.h` — W
-- **RESP:** g01–g21 cases  
-- **MATH FACT:** strong only g01–g03 (+ mna_test separately)  
-- **WEAK:** g18/g20 no τ; g21 structural  
+| File | RESP | MATH | CLASS |
+|------|------|------|-------|
+| physics2_isa | opcodes, pools | ID spaces | H |
+| physics2_interpreter | stamps, GE, BE C/L, **Newton diode** | linear MNA + Shockley companion | I/J/K/L/M |
+| physics2_types/symbols/typecheck/print | expr tooling | metadata | G |
 
-### `vendor_next/tests/*_test.c` — W
-- **RESP:** vec, intern, design, models, dfm, provider, mna  
-- **RESULT (re-verified):** all PASS  
+**Diode ABI (Phase 1):** stamp supplies Gd/Ieq; `physics2_context_step` owns Newton when any diode present. Test: `g22_diode_newton`.
 
 ---
 
-## Third party / web (summary)
+## Vendor `electronics_core`
 
-| Path | Class | Note |
+| File | RESP | MATH | CLASS | STATUS |
+|------|------|------|-------|--------|
+| mna.c/h | DC MNA + Newton diode | Shockley oracle | F/J/K/L | KEEP oracle |
+| dfm | 3 rules | height | R | live via bridge |
+| design/component/net | Design IR | — | E/O | DFM sidecar |
+| component_model/registry | catalog models | not equations | O | |
+| part_provider / kicad_generic | part search | unused generate | Q | FUTURE |
+| e_series | snap | unused generate | X | |
+| vec/intern/range/constraint/diagnostic | infra | — | X | |
+| PartIdentity.h | dup | **SAFE DELETE** | — | remove |
+
+---
+
+## W — Tests
+
+| File | MATH FACT |
+|------|-----------|
+| g01–g03 | G stamp / divider voltages |
+| g22 | Physics2 diode OP ≈ 0.574 V |
+| mna_test | vendor diode OP |
+| g04–g21 | integration / fail-closed / emit |
+| vendor unit | structure |
+
+---
+
+## V/X — Web / infra
+
+| Path | CLASS | NOTE |
 |------|-------|------|
-| `third_party/sqlite3/*` | X | amalgamation; relaxed warnings |
-| `third_party/cJSON/*` | X | JSON |
-| `web/server.py`, `api/index.py` | V | sync generate; 50s/300s timeout |
-| `public/*`, `web/static/*` | V | drifted UI copies |
-| `audit_build/probe.c` | X | ASan probe leftover; ignore |
+| web/server.py | V | sync chat + **async jobs** (`/api/jobs`) |
+| public / web/static | V | prefer public; sync in build.sh |
+| CMakeLists / build.sh | X | libm on electronics_core |
+| third_party | X | amalgams |
 
-**U PCB:** no first-party PCB modules.  
-**N AC:** no modules.
+**U PCB / N AC:** no modules yet — see `docs/math/AC_DAE_SPARSE.md`.
 
 ---
 
-## Dependency graph (libraries)
+## Dependency graph
 
 ```
-main → synth_core → electronics_core
+main → synth_core → electronics_core PUBLIC m (non-MSVC)
                  → sqlite3, cJSON
 golden_runner → synth_core
 vendor_*_test → electronics_core
 ```
 
-**Cycles:** none hard. Soft: compose→cli; bridge→compiler.h→physics2 headers.
-
----
-
-## Re-verification
-
-| Date | Suite | Result |
-|------|-------|--------|
-| 2026-09-21 (initial) | golden + vendor | PASS |
-| 2026-09-21 (re-check) | golden + vendor | PASS (`failures=0`) |
+No hard include cycles. Soft: compose→cli.

@@ -272,8 +272,8 @@ Companion: \(I(V) \approx I(V_0) + G_d(V-V_0) = G_d V + I_{eq}\).
 
 | | Status |
 |--|--------|
-| vendor_next | Implemented (`mna.c` Shockley + Newton); exp clamp \(\pm 40\, n V_t\) alters far-bias law |
-| Physics2 | Payload only; stamp `return false` (~1094–1112) |
+| Diode (vendor) | Implemented (`mna.c` Shockley + Newton); exp clamp ±40 nVt |
+| Physics2 diode | **IMPLEMENTED** companion stamp + Newton in `physics2_context_step`; golden g22 |
 | AD / dual numbers | **NOT IMPLEMENTED** |
 
 `mna_validate` diode “residual” stores diode current and compares to `DBL_MAX` — **not a meaningful equation residual** (~1079–1089).

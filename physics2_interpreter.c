@@ -1092,24 +1092,92 @@ static const PhysicsPrimitiveOps cccs_ops = {
     cccs_stamp, cccs_terminal_count, cccs_extra_unknowns, cccs_print};
 
 /* =========================================================
- * Diode (data model only — nonlinear stamp unsupported)
+ * Diode — Shockley companion linearization (Newton owned by runtime)
+ *
+ *   I = Is * (exp(Vd/(n*Vt)) - 1)
+ *   Gd = dI/dVd
+ *   Ieq = I - Gd * Vd
+ *   stamp Gd like R; RHS ± Ieq
  * ========================================================= */
+
+static void diode_shockley(double isat, double n, double vt, double vd,
+                           double *current_a, double *conductance_s) {
+  double exponent;
+  double exp_value;
+
+  exponent = vd / (n * vt);
+  if (exponent > 40.0)
+    exponent = 40.0;
+  if (exponent < -40.0)
+    exponent = -40.0;
+
+  exp_value = exp(exponent);
+  *current_a = isat * (exp_value - 1.0);
+  *conductance_s = isat * exp_value / (n * vt);
+}
 
 static bool diode_stamp(const PhysicsPrimitive *primitive,
                         PhysicsExecutionContext *context, const NodeId *terminals,
                         uint8_t terminal_count, BranchId branch) {
-  (void)primitive;
-  (void)context;
-  (void)terminals;
-  (void)terminal_count;
+  double isat;
+  double n;
+  double vt;
+  double va;
+  double vc;
+  double vd;
+  double current;
+  double gd;
+  double ieq;
+
   (void)branch;
 
-  /*
-   * Missing runtime capability:
-   * no residual/Jacobian (or equivalent linearization) ABI,
-   * and no Newton iteration ownership outside the primitive.
-   */
-  return false;
+  if (!primitive || !context || !context->accumulator || !terminals)
+    return false;
+
+  if (terminal_count != 2)
+    return false;
+
+  isat = primitive->payload.diode.isat.nominal;
+  n = primitive->payload.diode.n;
+  vt = primitive->payload.diode.vt;
+
+  if (!isfinite(isat) || isat <= 0.0 || !isfinite(n) || n <= 0.0 ||
+      !isfinite(vt) || vt <= 0.0)
+    return false;
+
+  va = 0.0;
+  vc = 0.0;
+  if (context->solution && context->solution_size > 0) {
+    if (terminals[0] >= context->solution_size ||
+        terminals[1] >= context->solution_size)
+      return false;
+    va = context->solution[terminals[0]];
+    vc = context->solution[terminals[1]];
+  }
+
+  vd = va - vc;
+  diode_shockley(isat, n, vt, vd, &current, &gd);
+  ieq = current - gd * vd;
+
+  if (!physics2_accumulator_add(context->accumulator, terminals[0], terminals[0],
+                                gd))
+    return false;
+  if (!physics2_accumulator_add(context->accumulator, terminals[0], terminals[1],
+                                -gd))
+    return false;
+  if (!physics2_accumulator_add(context->accumulator, terminals[1], terminals[0],
+                                -gd))
+    return false;
+  if (!physics2_accumulator_add(context->accumulator, terminals[1], terminals[1],
+                                gd))
+    return false;
+
+  if (!physics2_accumulator_add_rhs(context->accumulator, terminals[0], -ieq))
+    return false;
+  if (!physics2_accumulator_add_rhs(context->accumulator, terminals[1], ieq))
+    return false;
+
+  return true;
 }
 
 static uint8_t diode_terminal_count(const PhysicsPrimitive *primitive) {
@@ -1127,8 +1195,7 @@ static void diode_print(const PhysicsPrimitive *primitive, FILE *stream) {
     return;
 
   fprintf(stream,
-          "Primitive %s: DIODE Is=%.12g A n=%.6g Vt=%.6g V +/- %.6g%% "
-          "[nonlinear stamp unsupported]\n",
+          "Primitive %s: DIODE Is=%.12g A n=%.6g Vt=%.6g V +/- %.6g%%\n",
           primitive->name, primitive->payload.diode.isat.nominal,
           primitive->payload.diode.n, primitive->payload.diode.vt,
           primitive->payload.diode.isat.tolerance_pct);
@@ -1875,20 +1942,72 @@ bool physics2_context_step(PhysicsExecutionContext *context,
                            NodeId reference_node) {
   PhysicsInterpreter interpreter;
   size_t i;
+  size_t iter;
+  int has_diode = 0;
+  double *x_new = NULL;
+  const size_t max_newton = 100;
+  const double abs_tol = 1.0e-9;
+  const double max_dv = 0.25;
 
   if (!context || !context->program || !context->accumulator ||
       !context->solution)
     return false;
 
+  for (i = 0; i < context->program->instruction_count; i++) {
+    PhysicsPrimitive *p = physics2_registry_get(
+        &context->program->primitives,
+        context->program->instructions[i].primitive_id);
+    if (p && p->kind == PHYS_PRIM_DIODE)
+      has_diode = 1;
+  }
+
   interpreter.program = context->program;
   interpreter.context = context;
 
-  if (!physics2_interpreter_execute(&interpreter))
-    return false;
+  if (!has_diode) {
+    if (!physics2_interpreter_execute(&interpreter))
+      return false;
+    if (!physics2_accumulator_solve(context->accumulator, reference_node,
+                                    context->solution))
+      return false;
+  } else {
+    /* Global Newton: devices stamp linearized companion; runtime owns iteration. */
+    x_new = calloc(context->solution_size, sizeof(*x_new));
+    if (context->solution_size > 0 && !x_new)
+      return false;
 
-  if (!physics2_accumulator_solve(context->accumulator, reference_node,
-                                  context->solution))
-    return false;
+    for (iter = 0; iter < max_newton; iter++) {
+      double max_step = 0.0;
+
+      if (!physics2_interpreter_execute(&interpreter))
+        goto newton_fail;
+      if (!physics2_accumulator_solve(context->accumulator, reference_node,
+                                      x_new))
+        goto newton_fail;
+
+      for (i = 0; i < context->solution_size; i++) {
+        double d = x_new[i] - context->solution[i];
+        if (d > max_dv)
+          d = max_dv;
+        if (d < -max_dv)
+          d = -max_dv;
+        x_new[i] = context->solution[i] + d;
+        if (fabs(d) > max_step)
+          max_step = fabs(d);
+      }
+
+      memcpy(context->solution, x_new,
+             context->solution_size * sizeof(*context->solution));
+
+      if (max_step < abs_tol)
+        break;
+    }
+
+    if (iter >= max_newton)
+      goto newton_fail;
+    free(x_new);
+    x_new = NULL;
+  }
 
   for (i = 0; i < context->program->instruction_count; i++) {
     PhysicsInstruction *instruction = &context->program->instructions[i];
@@ -1936,6 +2055,10 @@ bool physics2_context_step(PhysicsExecutionContext *context,
   context->time += context->timestep;
 
   return true;
+
+newton_fail:
+  free(x_new);
+  return false;
 }
 
 bool physics2_interpreter_init(PhysicsInterpreter *interpreter,

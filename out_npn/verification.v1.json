@@ -1,6 +1,0 @@
-{
-	"schema":	"verification.v1",
-	"analysis":	"structural",
-	"passed":	true,
-	"summary":	"structural pass (transistor network); DC bias simulation not yet applied"
-}
