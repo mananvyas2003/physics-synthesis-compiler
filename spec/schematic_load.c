@@ -434,9 +434,20 @@ static int validate_root(cJSON *root) {
       int g2 = strcmp(n2, "GND") == 0;
       (void)unit_parse_number_or_string(tv, &val);
       if (p1 && p2 && strcmp(n1, n2) != 0) {
-        diag_set_error(
-            "Conflicting power nets: '%s' bridges %s and %s.", role, n1, n2);
-        return 1;
+        /* Near-short across two rails is illegal; a real divider (e.g. LDO
+         * feedback) between rails is allowed. */
+        if (strcmp(ptype, "resistor") == 0) {
+          if (val > 0.0 && val < 0.1) {
+            diag_set_error(
+                "Conflicting power nets: '%s' bridges %s and %s (R=%.3g).",
+                role, n1, n2, val);
+            return 1;
+          }
+        } else {
+          diag_set_error(
+              "Conflicting power nets: '%s' bridges %s and %s.", role, n1, n2);
+          return 1;
+        }
       }
       if (((p1 && g2) || (p2 && g1)) &&
           (strcmp(ptype, "switch") == 0 || strcmp(ptype, "connector") == 0 ||
