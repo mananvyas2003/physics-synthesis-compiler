@@ -239,7 +239,7 @@ form.addEventListener("submit", async (e) => {
 
     setStatus(`Job ${enq.job_id.slice(0, 8)}…`);
     thinking.querySelector(".text").textContent =
-      "Calling Gemini → bind → verify → emit…";
+      "NLP → bind → verify → emit…";
     const data = await pollGenerateJob(enq.job_id, (st) => {
       setStatus(`Job ${st}…`);
       thinking.querySelector(".text").textContent = `Status: ${st}`;

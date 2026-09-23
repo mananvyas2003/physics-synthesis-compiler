@@ -1,22 +1,8 @@
 # Chat UI (local)
 
-Browser front-end that feels like a chat product: you type a prompt, Gemini drafts `schematic-ir.v1`, then `synth generate` binds / verifies / emits KiCad artifacts.
+Browser front-end that feels like a chat product: you type a prompt, the offline C NLP frontend (`synth generate --prompt-text`) drafts `schematic-ir.v1`, then the compiler binds / verifies / emits KiCad artifacts. No API key or network access. Prompts the NLP cannot parse come back as a clarifying question (see [NLP.md](NLP.md) for supported patterns).
 
-## 1. Put your API key
-
-Cursor may refuse to open `.env`. Use either:
-
-**Option A (recommended in Cursor):** open [`GEMINI_API_KEY.local`](../GEMINI_API_KEY.local) and paste the key alone on one line.
-
-**Option B:** create `.env` in the repo root (outside Cursor if needed):
-
-```env
-GEMINI_API_KEY=your_key_here
-```
-
-Both files are gitignored. Do not put real keys in `.env.example`.
-
-## 2. Start the UI
+## 1. Start the UI
 
 ```powershell
 cd d:\physics-synthesis-compiler
@@ -31,7 +17,7 @@ Or:
 
 Open **http://127.0.0.1:8765/** in your browser.
 
-## 3. Use it
+## 2. Use it
 
 Type a circuit prompt → **Generate**. Download links appear for:
 
@@ -41,7 +27,7 @@ Type a circuit prompt → **Generate**. Download links appear for:
 - `design-snapshot.v1.json`
 - `verification.v1.json`
 - `mfg-dfm.v1.json` (manufacturing DFM report)
-- `prompt_schematic.json` (Gemini IR)
+- `prompt_schematic.json` (NLP-generated IR)
 
 ## Library uploads (parts + DFM)
 

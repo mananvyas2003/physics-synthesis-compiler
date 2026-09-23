@@ -1,5 +1,6 @@
 #include "golden_cases.h"
 
+#include "cJSON.h"
 #include "cli.h"
 #include "compiler.h"
 #include "compose.h"
@@ -14,8 +15,6 @@
 #include "mfg_dfm.h"
 #include "nlp.h"
 #include "nlp_runtime.h"
-#include "gemini_schematic.h"
-
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +27,12 @@ static int near_eq(double actual, double expected, double tolerance) {
 static char *join_root(const char *root, const char *rel) {
   return cli_join_path(root ? root : cli_fixture_root(), rel);
 }
+
+static int g81_solve(const CompiledSchematic *sch, const char *n1, double *v1,
+                     const char *n2, double *v2);
+static double g82_json_num(const char *file, const char *key, int index,
+                           const char *field);
+static double g82_bisect(double (*f)(double), double lo, double hi);
 
 int golden_g01_resistor_stamp(FILE *out) {
   PhysicsPrimitive r1;
@@ -979,7 +984,7 @@ static int generate_fixture_case(const char *fixture_root, const char *rel,
                                  CompiledSchematic *schematic) {
   char *seed_path = NULL;
   char *db_path = NULL;
-  char verify_path[] = "golden_phase1_verify.json";
+  char verify_path[] = "audit_build/golden_phase1_verify.json"; /* kept */
   DB *db = NULL;
   int rc = 1;
 
@@ -1006,7 +1011,6 @@ done:
     free(db_path);
   }
   free(seed_path);
-  remove(verify_path);
   return rc;
 }
 
@@ -1125,14 +1129,19 @@ int golden_g21_ldo_3v3(FILE *out, const char *fixture_root) {
   if (compiler_compile_from_design(db, "ldo_3v3", seed_path, &schematic) !=
       DB_OK)
     goto done;
-  /* Verify is expected to fail-closed for IC/regulator (returns non-zero). */
+  /* behavioral_lumped_ldo: 5 V in, Vtarget 3.3 V, no load → Vout = 3.3 V. */
   (void)verify_bound_schematic(&schematic, verify_path, &verify);
-
-  fprintf(out, "g21_ldo_3v3\n");
-  fprintf(out, "components=%d\n", schematic.component_count);
-  fprintf(out, "passed=%d\n", verify.passed);
-  if (schematic.component_count == 2 && !verify.passed)
-    rc = 0;
+  {
+    double v3 = 0.0;
+    int vout_ok = g81_solve(&schematic, "3V3", &v3, NULL, NULL) == 0 &&
+                  near_eq(v3, 3.3, 1e-6);
+    fprintf(out, "g21_ldo_3v3\n");
+    fprintf(out, "components=%d\n", schematic.component_count);
+    fprintf(out, "passed=%d\n", verify.passed);
+    fprintf(out, "vout_3v3_ok=%d\n", vout_ok);
+    if (schematic.component_count == 2 && verify.passed && vout_ok)
+      rc = 0;
+  }
 done:
   if (db)
     DB_close(db);
@@ -1439,7 +1448,7 @@ int golden_g26_903_sensor_power(FILE *out, const char *fixture_root) {
     goto done;
 
   compiler_physics_design_init(&phys);
-  if (!compiler_schematic_to_phys_design(&schematic, 3.3, &phys)) {
+  if (!compiler_schematic_to_phys_design(&schematic, &phys)) {
     compiler_physics_design_free(&phys);
     goto done;
   }
@@ -1463,11 +1472,33 @@ int golden_g26_903_sensor_power(FILE *out, const char *fixture_root) {
     if (!verify.passed)
       goto free_phys;
 
+    /* LED branch 3V3 → 330 → LED(Vf=2.0 @ 20 mA, n=2) → GND. Oracle: bisect
+     * the loop equation here, independent of the MNA/Newton path. */
+    {
+      const double vt = (1.380649e-23 * 300.0) / 1.602176634e-19;
+      const double is = 0.020 / (exp(2.0 / (2.0 * vt)) - 1.0);
+      double lo = 0.0, hi = 3.3, v_led = 0.0;
+      int it;
+      for (it = 0; it < 200; it++) {
+        double mid = 0.5 * (lo + hi);
+        double f = (3.3 - mid) / 330.0 - is * (exp(mid / (2.0 * vt)) - 1.0);
+        if (f > 0.0)
+          lo = mid;
+        else
+          hi = mid;
+      }
+      if (g81_solve(&schematic, "LED_A", &v_led, NULL, NULL) != 0 ||
+          !near_eq(v_led, 0.5 * (lo + hi), 1e-6) || v_led < 1.8 ||
+          v_led > 2.0)
+        goto free_phys;
+    }
+
     fprintf(out, "g26_903_sensor_power\n");
     fprintf(out, "bound_components=6\n");
     fprintf(out, "bound_caps=2\n");
     fprintf(out, "physics2_caps=2\n");
     fprintf(out, "sensor_vdd_ok=1\n");
+    fprintf(out, "led_operating_point_ok=1\n");
 
     runfp = fopen(run_path, "wb");
     if (runfp) {
@@ -2031,54 +2062,6 @@ int golden_g35_cccs(FILE *out) {
 done:
   physics2_accumulator_free(acc);
   physics2_program_free(&program);
-  return rc;
-}
-
-/* Phase 7: PhysDesign → Physics2 lowering for VCVS */
-int golden_g36_vcvs_phys_lower(FILE *out) {
-  CompilerPhysDesign phys;
-  CompiledPhysicsProgram compiled;
-  PhysicsAccumulator *acc = NULL;
-  PhysicsExecutionContext ctx;
-  const char *vs_t[] = {"VIN", "GND"};
-  const char *e_t[] = {"VOUT", "GND", "VIN", "GND"};
-  const char *rl_t[] = {"VOUT", "GND"};
-  NodeId gnd, vout;
-  int rc = 1;
-
-  if (!out)
-    return 1;
-  memset(&compiled, 0, sizeof(compiled));
-  memset(&ctx, 0, sizeof(ctx));
-  compiler_physics_design_init(&phys);
-  if (!compiler_physics_design_add(&phys, COMPILER_PHYS_VSOURCE, "V1", 1.0, 0.0,
-                                  vs_t, 2) ||
-      !compiler_physics_design_add(&phys, COMPILER_PHYS_VCVS, "E1", 2.0, 0.0,
-                                  e_t, 4) ||
-      !compiler_physics_design_add(&phys, COMPILER_PHYS_RESISTOR, "RL", 1000.0,
-                                  0.0, rl_t, 2))
-    goto done;
-  if (!compiler_lower_to_physics2(&phys, &compiled))
-    goto done;
-  gnd = compiler_physics_find_node(&compiled, "GND");
-  vout = compiler_physics_find_node(&compiled, "VOUT");
-  acc = physics2_accumulator_create(compiled.program.next_node +
-                                    compiled.program.branch_count);
-  if (!acc || gnd == PHYSICS2_NODE_NONE || vout == PHYSICS2_NODE_NONE ||
-      !physics2_context_init(&ctx, &compiled.program, acc, 0.0) ||
-      !physics2_context_step(&ctx, gnd))
-    goto done;
-  fprintf(out, "g36_vcvs_phys_lower\n");
-  fprintf(out, "vout=2.000000\n");
-  fprintf(out, "ok=1\n");
-  if (near_eq(ctx.solution[vout], 2.0, 1e-9) &&
-      compiled.program.instruction_count == 3)
-    rc = 0;
-  physics2_context_free(&ctx);
-done:
-  physics2_accumulator_free(acc);
-  compiler_free_physics_program(&compiled);
-  compiler_physics_design_free(&phys);
   return rc;
 }
 
@@ -3880,60 +3863,6 @@ done:
   return fail;
 }
 
-/* Phase 18: PCB emit — same nets as schematic, footprints, outline */
-int golden_g72_pcb_nets(FILE *out) {
-  CompiledSchematic sch;
-  CompiledComponent comps[2];
-  const char *path = "audit_build/g72_design.kicad_pcb";
-  FILE *fp;
-  char buf[8192];
-  size_t n;
-  int fail = 1;
-
-  if (!out)
-    return 1;
-  memset(&sch, 0, sizeof(sch));
-  memset(comps, 0, sizeof(comps));
-  strncpy(sch.name, "pcb_div", sizeof(sch.name) - 1);
-  strncpy(comps[0].role, "R1", sizeof(comps[0].role) - 1);
-  comps[0].part.type = PART_RESISTOR;
-  comps[0].part.value = 10000.0;
-  strncpy(comps[0].part.package, "0603", sizeof(comps[0].part.package) - 1);
-  comps[0].pin_count = 2;
-  strncpy(comps[0].node1, "VIN", sizeof(comps[0].node1) - 1);
-  strncpy(comps[0].node2, "VOUT", sizeof(comps[0].node2) - 1);
-  strncpy(comps[0].nodes[0], "VIN", sizeof(comps[0].nodes[0]) - 1);
-  strncpy(comps[0].nodes[1], "VOUT", sizeof(comps[0].nodes[1]) - 1);
-  strncpy(comps[1].role, "R2", sizeof(comps[1].role) - 1);
-  comps[1].part.type = PART_RESISTOR;
-  comps[1].part.value = 10000.0;
-  strncpy(comps[1].part.package, "0603", sizeof(comps[1].part.package) - 1);
-  comps[1].pin_count = 2;
-  strncpy(comps[1].node1, "VOUT", sizeof(comps[1].node1) - 1);
-  strncpy(comps[1].node2, "GND", sizeof(comps[1].node2) - 1);
-  strncpy(comps[1].nodes[0], "VOUT", sizeof(comps[1].nodes[0]) - 1);
-  strncpy(comps[1].nodes[1], "GND", sizeof(comps[1].nodes[1]) - 1);
-  sch.components = comps;
-  sch.component_count = 2;
-  if (!emit_kicad_pcb(path, &sch))
-    return 1;
-  fp = fopen(path, "rb");
-  if (!fp)
-    return 1;
-  n = fread(buf, 1, sizeof(buf) - 1, fp);
-  fclose(fp);
-  buf[n] = '\0';
-  fprintf(out, "g72_pcb_nets\n");
-  fprintf(out, "ok=1\n");
-  if (strstr(buf, "(kicad_pcb") && strstr(buf, "(net ") &&
-      strstr(buf, "\"VIN\"") && strstr(buf, "\"VOUT\"") &&
-      strstr(buf, "\"GND\"") && strstr(buf, "Edge.Cuts") &&
-      strstr(buf, "(footprint ") && strstr(buf, "\"R1\"") &&
-      strstr(buf, "\"R2\""))
-    fail = 0;
-  return fail;
-}
-
 /* Phase 19: deterministic NLP lexer */
 int golden_g73_nlp_lex(FILE *out) {
   NlpLexResult lex;
@@ -4028,13 +3957,43 @@ int golden_g76_nlp_runtime(FILE *out) {
 }
 
 /* Phase 20: 30 free-form prompts — parse or clarify, never silent invent */
+/*
+ * Prompt → NLP → IR → validate → bind → Physics2 verify.
+ * 'V' verified, 'C' refused with a clarifying question, 'X' IR emitted that
+ * then failed validation or verification (never acceptable).
+ */
+static char nlp_run_to_verify(const char *fixture_root, const char *text,
+                              const char *ir_path, VerifyResult *vr_out) {
+  char q[256];
+  SchematicIrMeta meta;
+  CompiledSchematic sch;
+  VerifyResult vr;
+  int rc;
+  if (nlp_text_to_schematic_ir(text, ir_path, q, sizeof(q)) != 0)
+    return 'C';
+  memset(&meta, 0, sizeof(meta));
+  memset(&sch, 0, sizeof(sch));
+  memset(&vr, 0, sizeof(vr));
+  if (schematic_ir_load_and_validate(ir_path, &meta) != 0)
+    return 'X';
+  rc = generate_fixture_case(fixture_root, ir_path, meta.name, &vr, &sch);
+  compiler_free_schematic(&sch);
+  if (vr_out)
+    *vr_out = vr;
+  return rc == 0 ? 'V' : 'X';
+}
+
 int golden_g77_nlp_corpus(FILE *out, const char *fixture_root) {
+  /* Per prompt p01..p30, derived from the prompt text (see REPAIR_PLAN §5):
+   * refuse when the supply voltage, a signal net, or the topology is not
+   * stated; otherwise the design must solve and pass verification. */
+  static const char expect[] = "CVCVCCVVCVCCCVVCVVCCCCVVVVCVCC";
+  char got[31];
   int i;
   int ok = 0;
   int clarify = 0;
   char path[512];
   char outp[128];
-  char q[256];
   char *text;
   FILE *fp;
   long size;
@@ -4066,85 +4025,90 @@ int golden_g77_nlp_corpus(FILE *out, const char *fixture_root) {
     fclose(fp);
     text[size] = '\0';
     snprintf(outp, sizeof(outp), "audit_build/g77_%02d.json", i);
-    if (nlp_text_to_schematic_ir(text, outp, q, sizeof(q)) == 0)
+    got[i - 1] = nlp_run_to_verify(fixture_root, text, outp, NULL);
+    if (got[i - 1] == 'V')
       ok++;
-    else
+    else if (got[i - 1] == 'C')
       clarify++;
     free(text);
   }
+  got[30] = '\0';
   fprintf(out, "g77_nlp_corpus\n");
   fprintf(out, "total=30\n");
-  fprintf(out, "parsed=%d\n", ok);
+  fprintf(out, "verified=%d\n", ok);
   fprintf(out, "clarified=%d\n", clarify);
-  fprintf(out, "ok=1\n");
-  return (ok + clarify == 30 && ok == 15 && clarify == 15) ? 0 : 1;
+  fprintf(out, "outcomes=%s\n", got);
+  return strcmp(got, expect) == 0 ? 0 : 1;
 }
 
-#ifdef _WIN32
-static int env_set(const char *k, const char *v) { return _putenv_s(k, v ? v : ""); }
-#else
-static int env_set(const char *k, const char *v) {
-  if (!v || !v[0])
-    return unsetenv(k);
-  return setenv(k, v, 1);
-}
-#endif
-
-/* Phase 21: GEMINI_REPLAY cassette → IR without network */
-int golden_g78_gemini_replay(FILE *out, const char *fixture_root) {
-  char cassette[512];
-  char ir_path[] = "audit_build/g78_gemini_ir.json";
-  SchematicIrMeta meta;
-  int rc;
-
-  if (!out)
-    return 1;
-  snprintf(cassette, sizeof(cassette), "%s/fixtures/gemini_replay/divider_10k",
-           fixture_root && fixture_root[0] ? fixture_root : ".");
-  if (env_set("SYNTH_GEMINI_REPLAY", cassette) != 0)
-    return 1;
-  memset(&meta, 0, sizeof(meta));
-  rc = gemini_schematic_from_prompt("ignored in replay", ir_path, &meta);
-  env_set("SYNTH_GEMINI_REPLAY", "");
-  fprintf(out, "g78_gemini_replay\n");
-  if (rc != 0) {
-    fprintf(out, "fail=%s\n", meta.clarifying_question);
-    return 1;
-  }
-  fprintf(out, "name=%s\n", meta.name);
-  fprintf(out, "replay=%d\n", 1);
-  fprintf(out, "ok=1\n");
-  return strcmp(meta.name, "gemini_replay_divider") == 0 ? 0 : 1;
+static double g83_vgs; /* gate voltage for the NMOS oracle */
+static double g83_nmos_f(double vds) {
+  double vov = g83_vgs - 1.5; /* NLP writes Vth = 1.5 V; K default 0.5 */
+  return (12.0 - vds) / 120.0 - 0.5 * (vov * vds - 0.5 * vds * vds);
 }
 
 /*
- * Phase 21: LIVE gate — unavailable unless SYNTH_GEMINI_LIVE=1 and API key.
- * Never silently reports live success without those.
+ * Super-prompt §62 prompts, text → NLP → IR → bind → Physics2, checked
+ * against hand-computed physics (not against compiler output).
  */
-int golden_g79_gemini_live_gate(FILE *out) {
-  const char *live = getenv("SYNTH_GEMINI_LIVE");
-  int want_live = (live && live[0] == '1');
-  int have_key = gemini_api_key_present();
-  int replay = gemini_replay_active();
+int golden_g83_nlp_physics(FILE *out, const char *fixture_root) {
+  static const char *const prompts[] = {
+      "Design a 3.3V rail capable of 250mA with a 100nF and 10uF decoupling "
+      "network.",
+      "I want an ADC divider from 5V that gives roughly 1V at the sense node.",
+      "Add a 4.7k pull-up for I2C at 3.3V.",
+      "Use a MOSFET to switch a 12V load from a 3.3V control line.",
+      "Give me a low-pass filter around 1 kHz.",
+      "Make a battery input with reverse-polarity protection.",
+      "Design an LED current indicator from the regulated rail.",
+      "Give me a 12 V input to 5 V regulator subsystem."};
+  const char *vpath = "audit_build/golden_phase1_verify.json";
+  char ir[64];
+  int ok[8];
+  int i, all = 1;
 
   if (!out)
     return 1;
-  fprintf(out, "g79_gemini_live_gate\n");
-  if (replay) {
-    fprintf(out, "status=replay_env_set\n");
-    fprintf(out, "ok=1\n");
-    /* Replay must not be mistaken for live in this gate. */
-    return 1;
+  fprintf(out, "g83_nlp_physics\n");
+  for (i = 0; i < 8; i++) {
+    VerifyResult vr;
+    char o;
+    memset(&vr, 0, sizeof(vr));
+    snprintf(ir, sizeof(ir), "audit_build/g83_%d.json", i + 1);
+    o = nlp_run_to_verify(fixture_root, prompts[i], ir, &vr);
+    switch (i) {
+    case 0: /* two decoupling caps on 3V3 reach Physics2 */
+      ok[i] = o == 'V' && vr.physics2_caps == 2;
+      break;
+    case 1: /* R1 = E24(10k·(5/1-1)) = 39k → 5·10/(39+10) */
+      ok[i] = o == 'V' && strcmp(vr.measured_node, "ADC_SENSE") == 0 &&
+              near_eq(vr.measured_v, 5.0 * 10.0 / 49.0, 1e-9);
+      break;
+    case 2: /* unloaded pull-ups: SDA/SCL sit at the rail */
+    case 5: /* battery + Schottky, no load */
+    case 7: /* LDO */
+      ok[i] = o == 'V';
+      break;
+    case 3: /* gate = 3.3·100k/100.1k; drain from triode KCL */
+      g83_vgs = 3.3 * 100e3 / (100e3 + 100.0);
+      ok[i] = o == 'V' && strcmp(vr.measured_node, "DRAIN") == 0 &&
+              near_eq(vr.measured_v, g82_bisect(g83_nmos_f, 0.0, 1.8), 1e-6);
+      break;
+    case 4: { /* C = E24(1/(2π·10k·1k)) = 16 nF; |H(1 kHz)| */
+      double w = 2.0 * 3.14159265358979323846 * 1000.0 * 10e3 * 16e-9;
+      ok[i] = o == 'V' &&
+              near_eq(g82_json_num(vpath, "ac_transfer", 4, "mag"),
+                      1.0 / sqrt(1.0 + w * w), 1e-9);
+      break;
+    }
+    case 6: /* "regulated rail" has no voltage → must ask, not guess */
+      ok[i] = o == 'C';
+      break;
+    }
+    fprintf(out, "prompt%d_ok=%d\n", i + 1, ok[i]);
+    all = all && ok[i];
   }
-  if (!want_live || !have_key) {
-    fprintf(out, "status=unavailable\n");
-    fprintf(out, "ok=1\n");
-    return 0;
-  }
-  /* Live smoke is manual/opt-in — do not auto-pass CI. */
-  fprintf(out, "status=live_ready\n");
-  fprintf(out, "ok=1\n");
-  return 0;
+  return all ? 0 : 1;
 }
 
 /* Phase 22: industrial macro catalog + compose scenarios */
@@ -4206,6 +4170,558 @@ int golden_g80_macro_corpus(FILE *out, const char *fixture_root) {
   fprintf(out, "ok=1\n");
   return (macros >= 14 && industrial.block_count == 6 &&
           tree.block_count == 5)
+             ? 0
+             : 1;
+}
+
+static void g81_part(CompiledComponent *c, const char *role, PartTypes type,
+                     double value, const char *a, const char *b) {
+  memset(c, 0, sizeof(*c));
+  strncpy(c->role, role, sizeof(c->role) - 1);
+  c->part.type = type;
+  c->part.value = value;
+  c->pin_count = 2;
+  strncpy(c->node1, a, sizeof(c->node1) - 1);
+  strncpy(c->node2, b, sizeof(c->node2) - 1);
+  strncpy(c->nodes[0], a, sizeof(c->nodes[0]) - 1);
+  strncpy(c->nodes[1], b, sizeof(c->nodes[1]) - 1);
+}
+
+/* DC solve through the live lowering path; nonzero on failure. */
+static int g81_solve(const CompiledSchematic *sch, const char *n1, double *v1,
+                     const char *n2, double *v2) {
+  CompilerPhysDesign phys;
+  CompiledPhysicsProgram compiled;
+  PhysicsAccumulator *acc = NULL;
+  PhysicsExecutionContext ctx;
+  NodeId gnd, a, b;
+  int rc = 1;
+
+  memset(&compiled, 0, sizeof(compiled));
+  memset(&ctx, 0, sizeof(ctx));
+  if (!compiler_schematic_to_phys_design(sch, &phys))
+    return 1;
+  if (!compiler_lower_to_physics2(&phys, &compiled))
+    goto done;
+  gnd = compiler_physics_find_node(&compiled, "GND");
+  a = compiler_physics_find_node(&compiled, n1);
+  b = n2 ? compiler_physics_find_node(&compiled, n2) : gnd;
+  acc = physics2_accumulator_create(compiled.program.next_node +
+                                    compiled.program.branch_count);
+  if (!acc || gnd == PHYSICS2_NODE_NONE || a == PHYSICS2_NODE_NONE ||
+      b == PHYSICS2_NODE_NONE ||
+      !physics2_context_init(&ctx, &compiled.program, acc, 0.0))
+    goto done;
+  ctx.quiet = 1;
+  ctx.newton_max_dv = 1.0;
+  ctx.newton_max_iter = 200;
+  if (!physics2_context_step(&ctx, gnd)) {
+    diag_set_error("%s", ctx.newton.failure[0] ? ctx.newton.failure : "step");
+    goto done;
+  }
+  *v1 = ctx.solution[a];
+  if (v2)
+    *v2 = ctx.solution[b];
+  rc = 0;
+  physics2_context_free(&ctx);
+done:
+  physics2_accumulator_free(acc);
+  compiler_free_physics_program(&compiled);
+  compiler_physics_design_free(&phys);
+  return rc;
+}
+
+/*
+ * Rails: one definition, one source per rail (→ GND), fail closed without one.
+ * Oracles are hand-computed dividers, not compiler output.
+ */
+int golden_g81_rail_sources(FILE *out) {
+  CompiledSchematic sch;
+  CompiledComponent c[4];
+  double v, va, vb;
+  int parse_ok, unloaded_ok, two_rail_ok, no_rail_ok;
+
+  if (!out)
+    return 1;
+
+  parse_ok = compiler_rail_voltage("3V3", &v) == RAIL_EXPLICIT &&
+             near_eq(v, 3.3, 1e-12) &&
+             compiler_rail_voltage("1V8", &v) == RAIL_EXPLICIT &&
+             near_eq(v, 1.8, 1e-12) &&
+             compiler_rail_voltage("12V", &v) == RAIL_EXPLICIT &&
+             near_eq(v, 12.0, 1e-12) &&
+             compiler_rail_voltage("VIN", &v) == RAIL_DEFAULTED &&
+             compiler_rail_voltage("GND", NULL) == RAIL_NONE &&
+             compiler_rail_voltage("V", NULL) == RAIL_NONE &&
+             compiler_rail_voltage("3V3X", NULL) == RAIL_NONE &&
+             compiler_rail_voltage("ADC_SENSE", NULL) == RAIL_NONE;
+
+  /* 3V3 → 10k → ADC_SENSE, no load: no current, so V(ADC_SENSE) = 3.3 V. */
+  memset(&sch, 0, sizeof(sch));
+  g81_part(&c[0], "R1", PART_RESISTOR, 10000.0, "3V3", "ADC_SENSE");
+  sch.components = c;
+  sch.component_count = 1;
+  unloaded_ok = g81_solve(&sch, "ADC_SENSE", &v, NULL, NULL) == 0 &&
+                near_eq(v, 3.3, 1e-9);
+
+  /* Independent rails: 5V/(1k+1k) → 2.5 V, 3V3·1k/(2k+1k) → 1.1 V. */
+  g81_part(&c[0], "R1", PART_RESISTOR, 1000.0, "5V", "VOUT");
+  g81_part(&c[1], "R2", PART_RESISTOR, 1000.0, "VOUT", "GND");
+  g81_part(&c[2], "R3", PART_RESISTOR, 2000.0, "3V3", "SENSE");
+  g81_part(&c[3], "R4", PART_RESISTOR, 1000.0, "SENSE", "GND");
+  sch.component_count = 4;
+  two_rail_ok = g81_solve(&sch, "VOUT", &va, "SENSE", &vb) == 0 &&
+                near_eq(va, 2.5, 1e-9) && near_eq(vb, 1.1, 1e-9);
+
+  /* Nothing drives the circuit → refuse, with a topology diagnostic. */
+  g81_part(&c[0], "R1", PART_RESISTOR, 1000.0, "SIG_A", "GND");
+  sch.component_count = 1;
+  diag_clear_error();
+  no_rail_ok = g81_solve(&sch, "SIG_A", &v, NULL, NULL) != 0 &&
+               strncmp(diag_last_error(), "TOPOLOGY_ERROR", 14) == 0;
+
+  fprintf(out, "g81_rail_sources\n");
+  fprintf(out, "rail_parse_ok=%d\n", parse_ok);
+  fprintf(out, "unloaded_sense_ok=%d\n", unloaded_ok);
+  fprintf(out, "two_rail_ok=%d\n", two_rail_ok);
+  fprintf(out, "no_rail_rejected=%d\n", no_rail_ok);
+  return (parse_ok && unloaded_ok && two_rail_ok && no_rail_ok) ? 0 : 1;
+}
+
+static void g82_dev(CompiledComponent *c, const char *role, PartTypes type,
+                    const char *kind, double value, int n, const char **nets) {
+  int p;
+  memset(c, 0, sizeof(*c));
+  strncpy(c->role, role, sizeof(c->role) - 1);
+  strncpy(c->kind, kind, sizeof(c->kind) - 1);
+  c->part.type = type;
+  c->part.value = value;
+  c->pin_count = n;
+  for (p = 0; p < n; p++)
+    strncpy(c->nodes[p], nets[p], sizeof(c->nodes[p]) - 1);
+  strncpy(c->node1, nets[0], sizeof(c->node1) - 1);
+  strncpy(c->node2, nets[1], sizeof(c->node2) - 1);
+}
+
+/* Read one number from a verification JSON: path like "newton.residual_norm"
+ * or "ac_transfer[4].mag". NAN if absent. */
+static double g82_json_num(const char *file, const char *key, int index,
+                           const char *field) {
+  FILE *fp = fopen(file, "rb");
+  char buf[16384];
+  size_t n;
+  cJSON *root, *node;
+  double v = NAN;
+  if (!fp)
+    return v;
+  n = fread(buf, 1, sizeof(buf) - 1, fp);
+  fclose(fp);
+  buf[n] = '\0';
+  root = cJSON_Parse(buf);
+  node = cJSON_GetObjectItemCaseSensitive(root, key);
+  if (index >= 0)
+    node = cJSON_GetArrayItem(node, index);
+  node = cJSON_GetObjectItemCaseSensitive(node, field);
+  if (cJSON_IsNumber(node))
+    v = node->valuedouble;
+  cJSON_Delete(root);
+  return v;
+}
+
+/* Bisection root of f on [lo, hi] (f(lo), f(hi) of opposite sign). */
+static double g82_bisect(double (*f)(double), double lo, double hi) {
+  int i;
+  for (i = 0; i < 200; i++) {
+    double mid = 0.5 * (lo + hi);
+    if ((f(mid) > 0.0) == (f(lo) > 0.0))
+      lo = mid;
+    else
+      hi = mid;
+  }
+  return 0.5 * (lo + hi);
+}
+
+/* NMOS triode (Vgs=3.3, Vth=1, K=0.5; λ applies in saturation only):
+ * I_D = K[(Vgs-Vth)Vds - Vds²/2], load 12 V / 120 Ω. f = I_load - I_D. */
+static double g82_nmos_k = 0.5;
+
+static double g82_nmos_f(double vds) {
+  double vov = 3.3 - 1.0;
+  return (12.0 - vds) / 120.0 - g82_nmos_k * (vov * vds - 0.5 * vds * vds);
+}
+
+static int g82_json_streq(const char *file, const char *key, const char *field,
+                          const char *want) {
+  FILE *fp = fopen(file, "rb");
+  char buf[16384];
+  size_t n;
+  cJSON *root, *node;
+  int ok = 0;
+  if (!fp)
+    return 0;
+  n = fread(buf, 1, sizeof(buf) - 1, fp);
+  fclose(fp);
+  buf[n] = '\0';
+  root = cJSON_Parse(buf);
+  node = cJSON_GetObjectItemCaseSensitive(root, key);
+  if (field)
+    node = cJSON_GetObjectItemCaseSensitive(node, field);
+  ok = cJSON_IsString(node) && want && strcmp(node->valuestring, want) == 0;
+  cJSON_Delete(root);
+  return ok;
+}
+
+static double g82_json_band(const char *file, int index, const char *field) {
+  FILE *fp = fopen(file, "rb");
+  char buf[16384];
+  size_t n;
+  cJSON *root, *node;
+  double v = NAN;
+  if (!fp)
+    return v;
+  n = fread(buf, 1, sizeof(buf) - 1, fp);
+  fclose(fp);
+  buf[n] = '\0';
+  root = cJSON_Parse(buf);
+  node = cJSON_GetObjectItemCaseSensitive(root, "ac_corners");
+  node = cJSON_GetObjectItemCaseSensitive(node, "band");
+  node = cJSON_GetArrayItem(node, index);
+  node = cJSON_GetObjectItemCaseSensitive(node, field);
+  if (cJSON_IsNumber(node))
+    v = node->valuedouble;
+  cJSON_Delete(root);
+  return v;
+}
+
+static int g82_file_exists(const char *path) {
+  FILE *fp = path ? fopen(path, "rb") : NULL;
+  if (fp) {
+    fclose(fp);
+    return 1;
+  }
+  return 0;
+}
+
+/* NPN Ebers-Moll, forward active: 5V → RB 100k → B, 5V → RC 470 → C, E=GND.
+ * Ib = (1-αF)·IES(e^(Vbe/Vt)-1) + (1-αR)·ICS(e^(Vbc/Vt)-1), Vbc ≈ -2.3 V so
+ * the reverse term is -ICS. f(Vbe) = I_RB - Ib. */
+static double g82_bjt_f(double vbe) {
+  const double vt = (1.380649e-23 * 300.0) / 1.602176634e-19;
+  const double is = 1.0e-14, af = 0.99, ar = 0.5;
+  double ies = is / af, ics = is / ar;
+  double i_f = ies * (exp(vbe / vt) - 1.0);
+  double i_b = (1.0 - af) * i_f + (1.0 - ar) * (-ics);
+  return (5.0 - vbe) / 100000.0 - i_b;
+}
+
+/*
+ * Generate-path physics: IR rails/measure/limits, tolerance corners, device
+ * lowering (NMOS, BJT, op-amp), AC transfer, Newton residual, power balance.
+ * Oracles are closed forms or bisection in this file, not the MNA solver.
+ */
+int golden_g82_generate_physics(FILE *out, const char *fixture_root) {
+  CompiledSchematic sch;
+  CompiledComponent c[4];
+  VerifyResult vr;
+  const char *vpath = "golden_g82_verify.json";
+  double v, t1, t2, hi, lo;
+  int rails_ok, limit_ok, corner_ok, nmos_ok, bjt_ok, opamp_ok, ac_ok, res_ok;
+  int switch_ok, pmos_ok, model_ok, conn_ok, ac_nl_ok, tran_ok, acc_ok, gen_ok;
+  int ldo_i_ok;
+
+  if (!out)
+    return 1;
+
+  /* 1. rails {"VIN": 12} + measure VOUT in [1.9, 2.1]: 12·2k/12k = 2.0 V. */
+  memset(&sch, 0, sizeof(sch));
+  memset(&vr, 0, sizeof(vr));
+  rails_ok = generate_fixture_case(fixture_root, "fixtures/seed/rails_measure.json",
+                                   "rails_measure", &vr, &sch) == 0 &&
+             strcmp(vr.measured_node, "VOUT") == 0 &&
+             near_eq(vr.measured_v, 2.0, 1e-9);
+  /* Corner oracle: R1·(1∓t1), R2·(1±t2) extremes of 12·R2/(R1+R2). */
+  t1 = sch.component_count == 2
+           ? Tolerance_ToPercentage(sch.components[0].part.tolerance_class) / 100.0
+           : 0.0;
+  t2 = sch.component_count == 2
+           ? Tolerance_ToPercentage(sch.components[1].part.tolerance_class) / 100.0
+           : 0.0;
+  hi = 12.0 * 2000.0 * (1 + t2) / (10000.0 * (1 - t1) + 2000.0 * (1 + t2));
+  lo = 12.0 * 2000.0 * (1 - t2) / (10000.0 * (1 + t1) + 2000.0 * (1 - t2));
+  corner_ok = rails_ok && vr.corner_count == 4 &&
+              near_eq(vr.corner_max, hi, 1e-9) &&
+              near_eq(vr.corner_min, lo, 1e-9);
+  /* Tighten the limit below the corner max → must fail with a violation. */
+  sch.measure_max = 0.5 * (2.0 + hi);
+  limit_ok = rails_ok && verify_bound_schematic(&sch, vpath, &vr) != 0 &&
+             vr.rating_violations == 1;
+  compiler_free_schematic(&sch);
+
+  /* 2. NMOS low-side switch: 12V → 120 Ω → D; G = 3V3; S = GND. */
+  memset(&sch, 0, sizeof(sch));
+  {
+    const char *rl[] = {"12V", "DRAIN"};
+    const char *m[] = {"GND", "3V3", "DRAIN"}; /* part_lib order S,G,D */
+    g82_dev(&c[0], "RL", PART_RESISTOR, "resistor", 120.0, 2, rl);
+    g82_dev(&c[1], "Q1", PART_TRANSISTOR, "mosfet", 1.0, 3, m);
+  }
+  sch.components = c;
+  sch.component_count = 2;
+  nmos_ok = g81_solve(&sch, "DRAIN", &v, NULL, NULL) == 0 &&
+            near_eq(v, g82_bisect(g82_nmos_f, 0.0, 2.3), 1e-6);
+
+  /* 3. NPN: 5V → RB 100k → B; 5V → RC 470 → C; E = GND. */
+  {
+    const char *rb[] = {"5V", "BASE"};
+    const char *rc[] = {"5V", "COLL"};
+    const char *q[] = {"GND", "BASE", "COLL"}; /* part_lib order E,B,C */
+    g82_dev(&c[0], "RB", PART_RESISTOR, "resistor", 100000.0, 2, rb);
+    g82_dev(&c[1], "RC", PART_RESISTOR, "resistor", 470.0, 2, rc);
+    g82_dev(&c[2], "Q1", PART_TRANSISTOR, "bjt", 1.0, 3, q);
+  }
+  sch.component_count = 3;
+  bjt_ok = g81_solve(&sch, "BASE", &v, NULL, NULL) == 0 &&
+           near_eq(v, g82_bisect(g82_bjt_f, 0.3, 0.9), 1e-4);
+
+  /* 4. Op-amp follower on a 5V/2 divider: Vout = 2.5·A/(1+A), A = 1e5. */
+  {
+    const char *r1[] = {"5V", "INP"};
+    const char *r2[] = {"INP", "GND"};
+    const char *u[] = {"INP", "OUT", "OUT", "5V", "GND"}; /* IN+,IN-,OUT,VCC,VEE */
+    g82_dev(&c[0], "R1", PART_RESISTOR, "resistor", 10000.0, 2, r1);
+    g82_dev(&c[1], "R2", PART_RESISTOR, "resistor", 10000.0, 2, r2);
+    g82_dev(&c[2], "U1", PART_IC, "opamp", 1.0, 5, u);
+  }
+  opamp_ok = g81_solve(&sch, "OUT", &v, NULL, NULL) == 0 &&
+             near_eq(v, 2.5 * 1.0e5 / (1.0 + 1.0e5), 1e-9);
+
+  /* 5. RC low-pass 1k/1uF: |H(1 kHz)| = 1/sqrt(1+(2π·f·RC)²). */
+  {
+    const char *r[] = {"5V", "VOUT"};
+    const char *cc[] = {"VOUT", "GND"};
+    const double w = 2.0 * 3.14159265358979323846 * 1000.0 * 1000.0 * 1e-6;
+    g82_dev(&c[0], "R1", PART_RESISTOR, "resistor", 1000.0, 2, r);
+    g82_dev(&c[1], "C1", PART_CAPACITOR, "capacitor", 1e-6, 2, cc);
+    sch.component_count = 2;
+    strcpy(sch.measure_node, "VOUT");
+    ac_ok = verify_bound_schematic(&sch, vpath, &vr) == 0 &&
+            near_eq(g82_json_num(vpath, "ac_transfer", 4, "f_hz"), 1000.0, 1e-6) &&
+            near_eq(g82_json_num(vpath, "ac_transfer", 4, "mag"),
+                    1.0 / sqrt(1.0 + w * w), 1e-9);
+  }
+
+  /* 6. LED branch: Newton residual reported and tiny; power balance closes. */
+  {
+    const char *r[] = {"5V", "LED_A"};
+    const char *d[] = {"LED_A", "GND"};
+    memset(&sch, 0, sizeof(sch));
+    sch.components = c;
+    g82_dev(&c[0], "R1", PART_RESISTOR, "resistor", 330.0, 2, r);
+    g82_dev(&c[1], "D1", PART_DIODE, "led", 2.0, 2, d);
+    sch.component_count = 2;
+    res_ok = verify_bound_schematic(&sch, vpath, &vr) == 0 &&
+             g82_json_num(vpath, "newton", -1, "residual_norm") < 1e-9 &&
+             fabs(g82_json_num(vpath, "power_balance", -1, "residual_w")) < 1e-9;
+  }
+
+  /* 7. Analog switch ON: 5V → SW(Ron=0.1) → VOUT → 1k → GND. */
+  {
+    const char *sw[] = {"5V", "VOUT"};
+    const char *rl[] = {"VOUT", "GND"};
+    g82_dev(&c[0], "S1", PART_CONNECTOR, "switch", 0.1, 2, sw);
+    g82_dev(&c[1], "RL", PART_RESISTOR, "resistor", 1000.0, 2, rl);
+    sch.component_count = 2;
+    switch_ok = g81_solve(&sch, "VOUT", &v, NULL, NULL) == 0 &&
+                near_eq(v, 5.0 * 1000.0 / (0.1 + 1000.0), 1e-9);
+  }
+
+  /* 8. PMOS high-side: S=5V, G=GND (on), D → 1k → GND → V(D) ≈ 5 V. */
+  {
+    const char *rl[] = {"DRAIN", "GND"};
+    const char *m[] = {"GND", "GND", "5V"}; /* part_lib S,G,D → wait order S,G,D */
+    /* part_lib pins_bjt: E/S, B/G, C/D → nodes[0]=S, [1]=G, [2]=D */
+    const char *pm[] = {"5V", "GND", "DRAIN"}; /* S=5V, G=0, D=DRAIN */
+    memset(&sch, 0, sizeof(sch));
+    sch.components = c;
+    g82_dev(&c[0], "RL", PART_RESISTOR, "resistor", 1000.0, 2, rl);
+    g82_dev(&c[1], "Q1", PART_TRANSISTOR, "pmos", 1.0, 3, pm);
+    (void)m;
+    sch.component_count = 2;
+    pmos_ok = g81_solve(&sch, "DRAIN", &v, NULL, NULL) == 0 && v > 4.9;
+  }
+
+  /* 9. IR parts[].model overrides DEF_MOS_K: K=0.25, same NMOS circuit. */
+  {
+    const char *rl[] = {"12V", "DRAIN"};
+    const char *m[] = {"GND", "3V3", "DRAIN"};
+    g82_dev(&c[0], "RL", PART_RESISTOR, "resistor", 120.0, 2, rl);
+    g82_dev(&c[1], "Q1", PART_TRANSISTOR, "mosfet", 1.0, 3, m);
+    strncpy(c[1].part.mpn, "NMOS_K25", sizeof(c[1].part.mpn) - 1);
+    memset(&sch, 0, sizeof(sch));
+    sch.components = c;
+    sch.component_count = 2;
+    strncpy(sch.models[0].mpn, "NMOS_K25", sizeof(sch.models[0].mpn) - 1);
+    strncpy(sch.models[0].key[0], "k", sizeof(sch.models[0].key[0]) - 1);
+    sch.models[0].val[0] = 0.25;
+    sch.models[0].n = 1;
+    sch.model_count = 1;
+    g82_nmos_k = 0.25;
+    {
+      double v25, v50;
+      model_ok = g81_solve(&sch, "DRAIN", &v25, NULL, NULL) == 0 &&
+                 near_eq(v25, g82_bisect(g82_nmos_f, 0.0, 4.0), 1e-6);
+      g82_nmos_k = 0.5;
+      v50 = g82_bisect(g82_nmos_f, 0.0, 2.3);
+      model_ok = model_ok && !near_eq(v25, v50, 1e-3);
+    }
+    g82_nmos_k = 0.5;
+  }
+
+  /* 10. 2-pin connector = 1 GΩ open; 3-pin connector fails closed. */
+  {
+    const char *cn[] = {"5V", "VOUT"};
+    const char *rl[] = {"VOUT", "GND"};
+    const char *bad[] = {"5V", "VOUT", "GND"};
+    memset(&sch, 0, sizeof(sch));
+    sch.components = c;
+    g82_dev(&c[0], "J1", PART_CONNECTOR, "connector", 1.0, 2, cn);
+    g82_dev(&c[1], "RL", PART_RESISTOR, "resistor", 1000.0, 2, rl);
+    sch.component_count = 2;
+    conn_ok = g81_solve(&sch, "VOUT", &v, NULL, NULL) == 0 &&
+              near_eq(v, 5.0 * 1000.0 / (1.0e9 + 1000.0), 1e-9);
+    g82_dev(&c[0], "J1", PART_CONNECTOR, "connector", 1.0, 3, bad);
+    sch.component_count = 1;
+    diag_clear_error();
+    conn_ok = conn_ok && g81_solve(&sch, "VOUT", &v, NULL, NULL) != 0 &&
+              strstr(diag_last_error(), "PHYSICS_UNSUPPORTED") != NULL;
+  }
+
+  /* 11. LDO fixture (g21): V(3V3)=3.3; I_in=I_out is in the stamp. */
+  {
+    memset(&sch, 0, sizeof(sch));
+    ldo_i_ok = generate_fixture_case(fixture_root, "fixtures/seed/ldo_3v3.json",
+                                    "ldo_3v3", &vr, &sch) == 0 &&
+               g81_solve(&sch, "3V3", &v, NULL, NULL) == 0 &&
+               near_eq(v, 3.3, 1e-3);
+    compiler_free_schematic(&sch);
+    sch.components = c;
+  }
+
+  /* 12. RC: AC |H|, R/C AC corners, power-on transient, line-search field. */
+  {
+    const char *r[] = {"5V", "VOUT"};
+    const char *cc[] = {"VOUT", "GND"};
+    const double w = 2.0 * 3.14159265358979323846 * 1000.0 * 1000.0 * 1e-6;
+    const double t = 0.05;
+    double hmin = 1.0 / sqrt(1.0 + w * w * (1 + t) * (1 + t) * (1 + t) * (1 + t));
+    double hmax = 1.0 / sqrt(1.0 + w * w * (1 - t) * (1 - t) * (1 - t) * (1 - t));
+    memset(&sch, 0, sizeof(sch));
+    sch.components = c;
+    g82_dev(&c[0], "R1", PART_RESISTOR, "resistor", 1000.0, 2, r);
+    g82_dev(&c[1], "C1", PART_CAPACITOR, "capacitor", 1e-6, 2, cc);
+    c[0].part.tolerance_class = TOLERANCE_E24;
+    c[1].part.tolerance_class = TOLERANCE_E24;
+    sch.component_count = 2;
+    strcpy(sch.measure_node, "VOUT");
+    sch.tran_step_s = 1e-5;
+    sch.tran_stop_s = 1e-3;
+    ac_ok = verify_bound_schematic(&sch, vpath, &vr) == 0 &&
+            near_eq(g82_json_num(vpath, "ac_transfer", 4, "f_hz"), 1000.0, 1e-6) &&
+            near_eq(g82_json_num(vpath, "ac_transfer", 4, "mag"),
+                    1.0 / sqrt(1.0 + w * w), 1e-9);
+    acc_ok = ac_ok && g82_json_streq(vpath, "ac_corners", "status", "exhaustive") &&
+             near_eq(g82_json_band(vpath, 4, "mag_min"), hmin, 1e-9) &&
+             near_eq(g82_json_band(vpath, 4, "mag_max"), hmax, 1e-9);
+    tran_ok = ac_ok && g82_json_streq(vpath, "transient", "status", "ok") &&
+              near_eq(g82_json_num(vpath, "transient", -1, "final_v"),
+                      5.0 * (1.0 - pow(1.0 / 1.01, 100.0)), 1e-6);
+  }
+
+  /* 13. Nonlinear AC: LED linearized at the DC OP (not skipped). */
+  {
+    const char *r[] = {"5V", "LED_A"};
+    const char *d[] = {"LED_A", "GND"};
+    memset(&sch, 0, sizeof(sch));
+    sch.components = c;
+    g82_dev(&c[0], "R1", PART_RESISTOR, "resistor", 330.0, 2, r);
+    g82_dev(&c[1], "D1", PART_DIODE, "led", 2.0, 2, d);
+    sch.component_count = 2;
+    strcpy(sch.measure_node, "LED_A");
+    ac_nl_ok = verify_bound_schematic(&sch, vpath, &vr) == 0 &&
+               g82_json_streq(vpath, "ac_status", NULL, "ok") &&
+               g82_json_num(vpath, "ac_transfer", 0, "mag") > 0.0 &&
+               g82_json_num(vpath, "newton", -1, "damping") > 0.0 &&
+               g82_json_num(vpath, "newton", -1, "damping") <= 1.0;
+  }
+
+  /* 14. generate writes emit to .gen, publishes on success, drops on fail. */
+  {
+    char *ir = join_root(fixture_root, "fixtures/seed/rails_measure.json");
+    char *dfm = join_root(fixture_root, "fixtures/dfm/standard.json");
+    const char *gout = "audit_build/g82_gen";
+    FILE *bf;
+    gen_ok = 0;
+#ifdef _WIN32
+    _putenv("SYNTH_CATALOGUE_DB=");
+#else
+    unsetenv("SYNTH_CATALOGUE_DB");
+#endif
+    if (ir && dfm && cmd_generate_design(ir, gout, NULL, dfm) == 0 &&
+        g82_file_exists("audit_build/g82_gen/design.net") &&
+        !g82_file_exists("audit_build/g82_gen/.gen/design.net")) {
+      bf = fopen("audit_build/g82_fail.json", "wb");
+      if (bf) {
+        fputs("{\"schema\":\"schematic-ir.v1\",\"name\":\"rails_measure\","
+              "\"description\":\"x\",\"category\":\"Analog\","
+              "\"rails\":{\"VIN\":12},\"measure\":{\"node\":\"VOUT\","
+              "\"min\":0,\"max\":0.01},\"parts\":["
+              "{\"mpn\":\"DEMO-10K-0603-A\",\"type\":\"resistor\","
+              "\"value\":10000,\"package\":\"0603\"},"
+              "{\"mpn\":\"DEMO-2K-0603-A\",\"type\":\"resistor\","
+              "\"value\":2000,\"package\":\"0603\"}],\"components\":["
+              "{\"role\":\"R1\",\"part_type\":\"resistor\",\"quantity\":1,"
+              "\"target_value\":10000,\"package\":\"0603\"},"
+              "{\"role\":\"R2\",\"part_type\":\"resistor\",\"quantity\":1,"
+              "\"target_value\":2000,\"package\":\"0603\"}],"
+              "\"nodes\":[\"VIN\",\"VOUT\",\"GND\"],\"connections\":["
+              "{\"role\":\"R1\",\"pin\":\"1\",\"node\":\"VIN\"},"
+              "{\"role\":\"R1\",\"pin\":\"2\",\"node\":\"VOUT\"},"
+              "{\"role\":\"R2\",\"pin\":\"1\",\"node\":\"VOUT\"},"
+              "{\"role\":\"R2\",\"pin\":\"2\",\"node\":\"GND\"}]}",
+              bf);
+        fclose(bf);
+        gen_ok = cmd_generate_design("audit_build/g82_fail.json", gout, NULL,
+                                     dfm) != 0 &&
+                 !g82_file_exists("audit_build/g82_gen/design.net") &&
+                 g82_file_exists("audit_build/g82_gen/verification.v1.json");
+      }
+    }
+    free(ir);
+    free(dfm);
+  }
+  remove(vpath);
+
+  fprintf(out, "g82_generate_physics\n");
+  fprintf(out, "ir_rails_measure_ok=%d\n", rails_ok);
+  fprintf(out, "tolerance_corners_ok=%d\n", corner_ok);
+  fprintf(out, "measure_limit_rejects=%d\n", limit_ok);
+  fprintf(out, "nmos_lowered_ok=%d\n", nmos_ok);
+  fprintf(out, "bjt_lowered_ok=%d\n", bjt_ok);
+  fprintf(out, "opamp_lowered_ok=%d\n", opamp_ok);
+  fprintf(out, "ac_rc_1khz_ok=%d\n", ac_ok);
+  fprintf(out, "newton_residual_power_balance_ok=%d\n", res_ok);
+  fprintf(out, "switch_lowered_ok=%d\n", switch_ok);
+  fprintf(out, "pmos_lowered_ok=%d\n", pmos_ok);
+  fprintf(out, "model_override_ok=%d\n", model_ok);
+  fprintf(out, "connector_ok=%d\n", conn_ok);
+  fprintf(out, "ldo_current_rated_ok=%d\n", ldo_i_ok);
+  fprintf(out, "ac_corners_ok=%d\n", acc_ok);
+  fprintf(out, "transient_ok=%d\n", tran_ok);
+  fprintf(out, "ac_nonlinear_ok=%d\n", ac_nl_ok);
+  fprintf(out, "generate_transactional_ok=%d\n", gen_ok);
+  return (rails_ok && corner_ok && limit_ok && nmos_ok && bjt_ok && opamp_ok &&
+          ac_ok && res_ok && switch_ok && pmos_ok && model_ok && conn_ok &&
+          ldo_i_ok && acc_ok && tran_ok && ac_nl_ok && gen_ok)
              ? 0
              : 1;
 }

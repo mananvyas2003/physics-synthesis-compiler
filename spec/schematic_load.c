@@ -2,12 +2,13 @@
 
 #include "cJSON.h"
 #include "cli.h"
+#include "compiler.h"
 #include "diag_error.h"
-#include "gemini_schematic.h"
 #include "nlp.h"
 #include "part_lib.h"
 #include "unit_parse.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -149,6 +150,46 @@ static int validate_root(cJSON *root) {
           mpn->valuestring);
       return 1;
     }
+    {
+      static const char *const keys[] = {
+          "is",      "n",    "alpha_f", "alpha_r", "vth",  "k",
+          "lambda",  "gain", "dropout", "rout",    "ilimit", "rint",
+          "ron",     "roff", "on"};
+      cJSON *model = cJSON_GetObjectItemCaseSensitive(item, "model");
+      cJSON *kv;
+      if (model && !cJSON_IsObject(model)) {
+        diag_set_error("Part '%s' 'model' must be an object of numbers.",
+                       mpn->valuestring);
+        return 1;
+      }
+      cJSON_ArrayForEach(kv, model) {
+        size_t ki;
+        int known = 0;
+        for (ki = 0; ki < sizeof(keys) / sizeof(keys[0]); ki++)
+          known |= kv->string && strcmp(kv->string, keys[ki]) == 0;
+        if (!known || !cJSON_IsNumber(kv) || !isfinite(kv->valuedouble) ||
+            (kv->valuedouble <= 0.0 && strcmp(kv->string, "on") != 0) ||
+            kv->valuedouble < 0.0) {
+          diag_set_error("Part '%s' model['%s'] must be a known parameter "
+                         "with a positive value.",
+                         mpn->valuestring, kv->string ? kv->string : "?");
+          return 1;
+        }
+      }
+    }
+  }
+  {
+    cJSON *tr = cJSON_GetObjectItemCaseSensitive(root, "transient");
+    cJSON *stop = cJSON_GetObjectItemCaseSensitive(tr, "stop_s");
+    cJSON *step = cJSON_GetObjectItemCaseSensitive(tr, "step_s");
+    if (tr && (!cJSON_IsNumber(stop) || !cJSON_IsNumber(step) ||
+               !(step->valuedouble > 0.0) ||
+               !(stop->valuedouble >= step->valuedouble) ||
+               stop->valuedouble / step->valuedouble > 100000.0)) {
+      diag_set_error("'transient' needs 0 < step_s <= stop_s with at most "
+                     "100000 steps.");
+      return 1;
+    }
   }
 
   cJSON_ArrayForEach(item, components) {
@@ -203,11 +244,7 @@ static int validate_root(cJSON *root) {
     }
     if (strcmp(item->valuestring, "GND") == 0)
       has_gnd = 1;
-    if (strcmp(item->valuestring, "VIN") == 0 ||
-        strcmp(item->valuestring, "VBUS") == 0 ||
-        strcmp(item->valuestring, "VCC") == 0 ||
-        strcmp(item->valuestring, "3V3") == 0 ||
-        strcmp(item->valuestring, "5V") == 0)
+    if (compiler_rail_voltage(item->valuestring, NULL) != RAIL_NONE)
       has_power = 1;
   }
 
@@ -310,10 +347,42 @@ static int validate_root(cJSON *root) {
         "Design has no GND node. Add a ground reference net named GND.");
     return 1;
   }
+  {
+    cJSON *rails = cJSON_GetObjectItemCaseSensitive(root, "rails");
+    cJSON *m = cJSON_GetObjectItemCaseSensitive(root, "measure");
+    if (rails && !cJSON_IsObject(rails)) {
+      diag_set_error("'rails' must be an object like {\"VIN\": 12.0}.");
+      return 1;
+    }
+    cJSON_ArrayForEach(item, rails) {
+      if (!cJSON_IsNumber(item) || item->valuedouble <= 0.0 ||
+          !node_in_list(nodes, item->string)) {
+        diag_set_error("rails['%s'] needs a positive voltage and a node listed "
+                       "in nodes[].",
+                       item->string ? item->string : "?");
+        return 1;
+      }
+      has_power = 1;
+    }
+    if (m) {
+      const char *mn =
+          cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(m, "node"));
+      if (!mn || !node_in_list(nodes, mn)) {
+        diag_set_error("'measure.node' must name a node listed in nodes[].");
+        return 1;
+      }
+    }
+    cJSON_ArrayForEach(item, components) {
+      const char *pt = cJSON_GetStringValue(
+          cJSON_GetObjectItemCaseSensitive(item, "part_type"));
+      if (pt && strcmp(pt, "battery") == 0)
+        has_power = 1;
+    }
+  }
   if (!has_power) {
     diag_set_error(
-        "Design has no power reference (expected one of VIN, VBUS, VCC, 3V3, "
-        "5V).");
+        "Design has no power source: add a rail net (VIN, VCC, 3V3, 5V, 12V, "
+        "...), a 'rails' entry, or a battery.");
     return 1;
   }
 
@@ -425,12 +494,8 @@ static int validate_root(cJSON *root) {
       }
     }
     if (got == 2) {
-      int p1 = (strcmp(n1, "VIN") == 0 || strcmp(n1, "VBUS") == 0 ||
-                strcmp(n1, "5V") == 0 || strcmp(n1, "3V3") == 0 ||
-                strcmp(n1, "VCC") == 0);
-      int p2 = (strcmp(n2, "VIN") == 0 || strcmp(n2, "VBUS") == 0 ||
-                strcmp(n2, "5V") == 0 || strcmp(n2, "3V3") == 0 ||
-                strcmp(n2, "VCC") == 0);
+      int p1 = compiler_rail_voltage(n1, NULL) != RAIL_NONE;
+      int p2 = compiler_rail_voltage(n2, NULL) != RAIL_NONE;
       int g1 = strcmp(n1, "GND") == 0;
       int g2 = strcmp(n2, "GND") == 0;
       (void)unit_parse_number_or_string(tv, &val);
@@ -547,8 +612,8 @@ static int offline_from_prompt(const char *prompt_path, char *out_ir_path,
 
   if (prompt_id_from_path(prompt_path, num, sizeof(num)) != 0) {
     snprintf(meta->clarifying_question, sizeof(meta->clarifying_question),
-             "Prompt path missing id; use fixtures/prompts/NNN.txt or set "
-             "GEMINI_API_KEY for live mode");
+             "Prompt path missing id; --offline-prompt needs "
+             "fixtures/prompts/NNN.txt (drop the flag to use NLP)");
     return 1;
   }
 
@@ -583,33 +648,6 @@ int schematic_provider_from_prompt(const char *prompt_path,
     return 1;
   memset(meta, 0, sizeof(*meta));
   out_ir_path[0] = '\0';
-
-  if (!force_offline && (gemini_api_key_present() || gemini_replay_active())) {
-    if (prompt_text_override && prompt_text_override[0]) {
-      prompt_text = malloc(strlen(prompt_text_override) + 1);
-      if (prompt_text)
-        memcpy(prompt_text, prompt_text_override,
-               strlen(prompt_text_override) + 1);
-    } else if (prompt_path) {
-      prompt_text = read_all(prompt_path);
-    }
-    if (!prompt_text) {
-      snprintf(meta->clarifying_question, sizeof(meta->clarifying_question),
-               "Cannot read prompt text for Gemini");
-      return 1;
-    }
-    if (!preferred_out_path) {
-      snprintf(meta->clarifying_question, sizeof(meta->clarifying_question),
-               "Live Gemini requires an output IR path");
-      free(prompt_text);
-      return 1;
-    }
-    strncpy(out_ir_path, preferred_out_path, out_len - 1);
-    out_ir_path[out_len - 1] = '\0';
-    rc = gemini_schematic_from_prompt(prompt_text, out_ir_path, meta);
-    free(prompt_text);
-    return rc;
-  }
 
   /* Corpus fixture map: only with --offline-prompt + fixtures/prompts/NNN.txt */
   if (force_offline && prompt_path) {

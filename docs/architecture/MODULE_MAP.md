@@ -106,7 +106,6 @@ Third-party amalgams (`sqlite3`, `cJSON`) summarized once.
 | File | RESP | CLASS | LEAK |
 |------|------|-------|------|
 | schematic_load | IR validate; prompt route | C/B | power-net checks |
-| gemini_schematic | curl→IR | B | was MPN invent; now `parts:[]` |
 | spec_load | SpecV1 | C | — |
 | llm_provider | offline prompt map | C | misleading name |
 

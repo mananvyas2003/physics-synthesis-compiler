@@ -25,8 +25,8 @@ if command -v gcc >/dev/null 2>&1; then
         unit_parse.c diag_error.c part_lib.c \
         physics2_isa.c physics2_interpreter.c physics2_types.c physics2_print.c \
         physics2_symbols.c physics2_typecheck.c seed/seed_topology.c \
-        emit/emit_bom.c emit/emit_netlist.c emit/emit_snapshot.c emit/emit_pcb.c \
-        spec/spec_load.c spec/llm_provider.c spec/schematic_load.c spec/gemini_schematic.c \
+        emit/emit_bom.c emit/emit_netlist.c emit/emit_snapshot.c \
+        spec/spec_load.c spec/llm_provider.c spec/schematic_load.c \
         nlp/nlp.c nlp/nlp_runtime.c \
         compose/compose.c bind/bind_scorer.c verify/verify_report.c \
         cli/cli_common.c cli/cmd_db.c cli/cmd_dfm.c cli/cmd_compile.c \

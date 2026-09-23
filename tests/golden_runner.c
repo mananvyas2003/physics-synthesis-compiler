@@ -1,5 +1,6 @@
 #include "golden_cases.h"
 
+#include "cJSON.h"
 #include "cli.h"
 
 #include <stdio.h>
@@ -166,11 +167,6 @@ static int run_g34(FILE *out, const char *fixture_root) {
 static int run_g35(FILE *out, const char *fixture_root) {
   (void)fixture_root;
   return golden_g35_cccs(out);
-}
-
-static int run_g36(FILE *out, const char *fixture_root) {
-  (void)fixture_root;
-  return golden_g36_vcvs_phys_lower(out);
 }
 
 static int run_g37(FILE *out, const char *fixture_root) {
@@ -348,11 +344,6 @@ static int run_g71(FILE *out, const char *fixture_root) {
   return golden_g71_dfm_telemetry(out);
 }
 
-static int run_g72(FILE *out, const char *fixture_root) {
-  (void)fixture_root;
-  return golden_g72_pcb_nets(out);
-}
-
 static int run_g73(FILE *out, const char *fixture_root) {
   (void)fixture_root;
   return golden_g73_nlp_lex(out);
@@ -377,17 +368,21 @@ static int run_g77(FILE *out, const char *fixture_root) {
   return golden_g77_nlp_corpus(out, fixture_root);
 }
 
-static int run_g78(FILE *out, const char *fixture_root) {
-  return golden_g78_gemini_replay(out, fixture_root);
-}
-
-static int run_g79(FILE *out, const char *fixture_root) {
-  (void)fixture_root;
-  return golden_g79_gemini_live_gate(out);
-}
-
 static int run_g80(FILE *out, const char *fixture_root) {
   return golden_g80_macro_corpus(out, fixture_root);
+}
+
+static int run_g81(FILE *out, const char *fixture_root) {
+  (void)fixture_root;
+  return golden_g81_rail_sources(out);
+}
+
+static int run_g82(FILE *out, const char *fixture_root) {
+  return golden_g82_generate_physics(out, fixture_root);
+}
+
+static int run_g83(FILE *out, const char *fixture_root) {
+  return golden_g83_nlp_physics(out, fixture_root);
 }
 
 static char *read_file(const char *path) {
@@ -432,6 +427,19 @@ static char *read_file(const char *path) {
   return buf;
 }
 
+/* Machine-readable run log (audit_build/test-run.v1.json). */
+static cJSON *g_cases;
+
+static void log_case(const char *name, int passed, const char *reason,
+                     const char *output) {
+  cJSON *c = cJSON_CreateObject();
+  cJSON_AddStringToObject(c, "name", name);
+  cJSON_AddBoolToObject(c, "passed", passed);
+  cJSON_AddStringToObject(c, "reason", reason);
+  cJSON_AddStringToObject(c, "output", output ? output : "");
+  cJSON_AddItemToArray(g_cases, c);
+}
+
 static void normalize_newlines(char *text) {
   char *src;
   char *dst;
@@ -472,39 +480,31 @@ static int write_temp_and_compare(const GoldenCase *gc, const char *fixture_root
   rc = gc->run(fp, fixture_root);
   fclose(fp);
 
-  if (rc != 0) {
-    fprintf(stderr, "[GOLDEN] %s case execution failed\n", gc->name);
-    remove(actual_path);
-    return 1;
-  }
-
   expected = read_file(expected_path);
   actual = read_file(actual_path);
-
-  if (!expected || !actual) {
-    fprintf(stderr, "[GOLDEN] %s missing expected or actual file\n", gc->name);
-    free(expected);
-    free(actual);
-    remove(actual_path);
-    return 1;
-  }
-
+  remove(actual_path);
   normalize_newlines(expected);
   normalize_newlines(actual);
 
-  if (strcmp(expected, actual) != 0) {
+  if (rc != 0) {
+    fprintf(stderr, "[GOLDEN] %s case execution failed\n%s\n", gc->name,
+            actual ? actual : "");
+    log_case(gc->name, 0, "execution_failed", actual);
+  } else if (!expected || !actual) {
+    fprintf(stderr, "[GOLDEN] %s missing expected or actual file\n", gc->name);
+    log_case(gc->name, 0, "missing_expected", actual);
+    rc = 1;
+  } else if (strcmp(expected, actual) != 0) {
     fprintf(stderr, "[GOLDEN] DIFF %s\n--- expected ---\n%s\n--- actual ---\n%s\n",
             gc->name, expected, actual);
-    free(expected);
-    free(actual);
-    remove(actual_path);
-    return 1;
+    log_case(gc->name, 0, "diff", actual);
+    rc = 1;
+  } else {
+    log_case(gc->name, 1, "", actual);
   }
-
   free(expected);
   free(actual);
-  remove(actual_path);
-  return 0;
+  return rc != 0;
 }
 
 int main(int argc, char **argv) {
@@ -567,8 +567,6 @@ int main(int argc, char **argv) {
       {"g33_vccs", "tests/golden/g33_vccs/expected.txt", run_g33},
       {"g34_ccvs", "tests/golden/g34_ccvs/expected.txt", run_g34},
       {"g35_cccs", "tests/golden/g35_cccs/expected.txt", run_g35},
-      {"g36_vcvs_phys_lower", "tests/golden/g36_vcvs_phys_lower/expected.txt",
-       run_g36},
       {"g37_newton_report", "tests/golden/g37_newton_report/expected.txt",
        run_g37},
       {"g38_newton_bad_init", "tests/golden/g38_newton_bad_init/expected.txt",
@@ -628,18 +626,17 @@ int main(int argc, char **argv) {
        "tests/golden/g70_dfm_missing_package/expected.txt", run_g70},
       {"g71_dfm_telemetry", "tests/golden/g71_dfm_telemetry/expected.txt",
        run_g71},
-      {"g72_pcb_nets", "tests/golden/g72_pcb_nets/expected.txt", run_g72},
       {"g73_nlp_lex", "tests/golden/g73_nlp_lex/expected.txt", run_g73},
       {"g74_nlp_between", "tests/golden/g74_nlp_between/expected.txt", run_g74},
       {"g75_nlp_ambiguous", "tests/golden/g75_nlp_ambiguous/expected.txt",
        run_g75},
       {"g76_nlp_runtime", "tests/golden/g76_nlp_runtime/expected.txt", run_g76},
       {"g77_nlp_corpus", "tests/golden/g77_nlp_corpus/expected.txt", run_g77},
-      {"g78_gemini_replay", "tests/golden/g78_gemini_replay/expected.txt",
-       run_g78},
-      {"g79_gemini_live_gate", "tests/golden/g79_gemini_live_gate/expected.txt",
-       run_g79},
       {"g80_macro_corpus", "tests/golden/g80_macro_corpus/expected.txt", run_g80},
+      {"g81_rail_sources", "tests/golden/g81_rail_sources/expected.txt", run_g81},
+      {"g82_generate_physics", "tests/golden/g82_generate_physics/expected.txt",
+       run_g82},
+      {"g83_nlp_physics", "tests/golden/g83_nlp_physics/expected.txt", run_g83},
   };
   size_t i;
   int failures = 0;
@@ -648,6 +645,7 @@ int main(int argc, char **argv) {
   (void)argv;
 
   fixture_root = cli_fixture_root();
+  g_cases = cJSON_CreateArray();
 
   for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
     char *expected_path =
@@ -664,6 +662,23 @@ int main(int argc, char **argv) {
       fprintf(stdout, "GOLDEN_OK %s\n", cases[i].name);
 
     free(expected_path);
+  }
+
+  {
+    cJSON *root = cJSON_CreateObject();
+    char *printed;
+    FILE *fp = fopen("audit_build/test-run.v1.json", "wb");
+    cJSON_AddStringToObject(root, "schema", "test-run.v1");
+    cJSON_AddNumberToObject(root, "total", (double)cJSON_GetArraySize(g_cases));
+    cJSON_AddNumberToObject(root, "failures", failures);
+    cJSON_AddItemToObject(root, "cases", g_cases);
+    printed = cJSON_Print(root);
+    if (fp && printed)
+      fputs(printed, fp);
+    if (fp)
+      fclose(fp);
+    free(printed);
+    cJSON_Delete(root);
   }
 
   if (failures != 0) {

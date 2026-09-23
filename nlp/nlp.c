@@ -1,12 +1,16 @@
 #include "nlp.h"
 
+#include "compiler.h"
+#include "e_series.h"
+
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* ponytail: pattern IR for divider/pull/bypass/RC/between; ONNX/Gemini later */
+/* ponytail: keyword patterns + closed-form value synthesis; a parser with
+ * real grammar (or the ONNX path) when patterns stop scaling. */
 
 static int ci_eq(const char *a, const char *b) {
   while (*a && *b) {
@@ -447,127 +451,237 @@ static int find_from_to(const NlpLexResult *lex, char *a, size_t alen, char *b,
   return 1;
 }
 
-static int write_twoterm_ir(const char *path, const char *name,
-                            const char *part_type, double value,
-                            const char *pkg, const char *n1, const char *n2) {
-  FILE *fp = fopen(path, "wb");
-  const char *p = pkg && pkg[0] ? pkg : "0603";
-  if (!fp)
-    return 1;
-  fprintf(fp,
-          "{\n"
-          "  \"schema\": \"schematic-ir.v1\",\n"
-          "  \"name\": \"%s\",\n"
-          "  \"description\": \"nlp offline\",\n"
-          "  \"category\": \"NLP\",\n"
-          "  \"parts\": [\n"
-          "    { \"mpn\": \"NLP-DEMO\", \"type\": \"%s\", \"value\": %.12g, "
-          "\"package\": \"%s\", \"v_rating\": 50.0, \"power_rating_w\": 0.125 }\n"
-          "  ],\n"
-          "  \"components\": [\n"
-          "    { \"role\": \"X1\", \"part_type\": \"%s\", \"quantity\": 1, "
-          "\"target_value\": %.12g, \"package\": \"%s\" }\n"
-          "  ],\n"
-          "  \"nodes\": [\"%s\", \"%s\", \"GND\"],\n"
-          "  \"connections\": [\n"
-          "    { \"role\": \"X1\", \"pin\": \"1\", \"node\": \"%s\" },\n"
-          "    { \"role\": \"X1\", \"pin\": \"2\", \"node\": \"%s\" }\n"
-          "  ]\n"
-          "}\n",
-          name, part_type, value, p, part_type, value, p, n1, n2, n1, n2);
-  fclose(fp);
-  return 0;
+/* =========================================================
+ * Design builder → schematic-ir.v1. One writer for every pattern.
+ * ========================================================= */
+
+typedef struct {
+  char role[16];
+  const char *type;
+  double value;
+  double power;    /* W rating; 0 → type default */
+  const char *pkg; /* NULL → design package */
+  const char *pins[3];
+  char nets[3][48];
+  int n;
+} NlpPart;
+
+typedef struct {
+  NlpPart p[8];
+  int n;
+  char measure[48];
+  double mmin, mmax;
+  int limits;
+  char prov[512];  /* JSON members "key": "explicit|inferred|defaulted" */
+  char notes[256]; /* JSON strings: stated requirements not modeled */
+} NlpDesign;
+
+static NlpPart *add_part(NlpDesign *d, const char *role, const char *type,
+                         double value, const char *a, const char *b) {
+  NlpPart *p = &d->p[d->n++];
+  int diode = strcmp(type, "led") == 0 || strcmp(type, "diode") == 0;
+  memset(p, 0, sizeof(*p));
+  snprintf(p->role, sizeof(p->role), "%s", role);
+  p->type = type;
+  p->value = value;
+  p->pins[0] = diode ? "A" : "1";
+  p->pins[1] = diode ? "K" : "2";
+  snprintf(p->nets[0], sizeof(p->nets[0]), "%s", a);
+  snprintf(p->nets[1], sizeof(p->nets[1]), "%s", b);
+  p->n = 2;
+  return p;
 }
 
-static int write_divider_ir(const char *path, double r1, double r2,
-                            const char *top, const char *mid, const char *bot,
-                            const char *pkg) {
-  FILE *fp = fopen(path, "wb");
-  const char *p = pkg && pkg[0] ? pkg : "0603";
-  if (!fp)
-    return 1;
-  fprintf(fp,
-          "{\n"
-          "  \"schema\": \"schematic-ir.v1\",\n"
-          "  \"name\": \"nlp_divider\",\n"
-          "  \"description\": \"nlp offline divider\",\n"
-          "  \"category\": \"NLP\",\n"
-          "  \"parts\": [\n"
-          "    { \"mpn\": \"NLP-R1\", \"type\": \"resistor\", \"value\": %.12g, "
-          "\"package\": \"%s\", \"v_rating\": 50.0, \"power_rating_w\": 0.125 },\n"
-          "    { \"mpn\": \"NLP-R2\", \"type\": \"resistor\", \"value\": %.12g, "
-          "\"package\": \"%s\", \"v_rating\": 50.0, \"power_rating_w\": 0.125 }\n"
-          "  ],\n"
-          "  \"components\": [\n"
-          "    { \"role\": \"r1\", \"part_type\": \"resistor\", \"quantity\": 1, "
-          "\"target_value\": %.12g, \"package\": \"%s\" },\n"
-          "    { \"role\": \"r2\", \"part_type\": \"resistor\", \"quantity\": 1, "
-          "\"target_value\": %.12g, \"package\": \"%s\" }\n"
-          "  ],\n"
-          "  \"nodes\": [\"%s\", \"%s\", \"%s\"],\n"
-          "  \"connections\": [\n"
-          "    { \"role\": \"r1\", \"pin\": \"1\", \"node\": \"%s\" },\n"
-          "    { \"role\": \"r1\", \"pin\": \"2\", \"node\": \"%s\" },\n"
-          "    { \"role\": \"r2\", \"pin\": \"1\", \"node\": \"%s\" },\n"
-          "    { \"role\": \"r2\", \"pin\": \"2\", \"node\": \"%s\" }\n"
-          "  ]\n"
-          "}\n",
-          r1, p, r2, p, r1, p, r2, p, top, mid, bot, top, mid, mid, bot);
-  fclose(fp);
-  return 0;
+static void add_prov(NlpDesign *d, const char *key, const char *src) {
+  size_t len = strlen(d->prov);
+  snprintf(d->prov + len, sizeof(d->prov) - len, "%s\"%s\": \"%s\"",
+           len ? ", " : "", key, src);
 }
 
-static int write_rc_ir(const char *path, double r, double c, const char *vin,
-                       const char *vout, const char *pkg) {
-  FILE *fp = fopen(path, "wb");
-  const char *p = pkg && pkg[0] ? pkg : "0603";
-  if (!fp)
-    return 1;
-  fprintf(fp,
-          "{\n"
-          "  \"schema\": \"schematic-ir.v1\",\n"
-          "  \"name\": \"nlp_rc\",\n"
-          "  \"description\": \"nlp offline RC\",\n"
-          "  \"category\": \"NLP\",\n"
-          "  \"parts\": [\n"
-          "    { \"mpn\": \"NLP-R\", \"type\": \"resistor\", \"value\": %.12g, "
-          "\"package\": \"%s\", \"v_rating\": 50.0, \"power_rating_w\": 0.125 },\n"
-          "    { \"mpn\": \"NLP-C\", \"type\": \"capacitor\", \"value\": %.12g, "
-          "\"package\": \"%s\", \"v_rating\": 50.0, \"power_rating_w\": 0.125 }\n"
-          "  ],\n"
-          "  \"components\": [\n"
-          "    { \"role\": \"r1\", \"part_type\": \"resistor\", \"quantity\": 1, "
-          "\"target_value\": %.12g, \"package\": \"%s\" },\n"
-          "    { \"role\": \"c1\", \"part_type\": \"capacitor\", \"quantity\": 1, "
-          "\"target_value\": %.12g, \"package\": \"%s\" }\n"
-          "  ],\n"
-          "  \"nodes\": [\"%s\", \"%s\", \"GND\"],\n"
-          "  \"connections\": [\n"
-          "    { \"role\": \"r1\", \"pin\": \"1\", \"node\": \"%s\" },\n"
-          "    { \"role\": \"r1\", \"pin\": \"2\", \"node\": \"%s\" },\n"
-          "    { \"role\": \"c1\", \"pin\": \"1\", \"node\": \"%s\" },\n"
-          "    { \"role\": \"c1\", \"pin\": \"2\", \"node\": \"GND\" }\n"
-          "  ]\n"
-          "}\n",
-          r, p, c, p, r, p, c, p, vin, vout, vin, vout, vout);
-  fclose(fp);
-  return 0;
+static void add_note(NlpDesign *d, const char *note) {
+  size_t len = strlen(d->notes);
+  snprintf(d->notes + len, sizeof(d->notes) - len, "%s\"%s\"",
+           len ? ", " : "", note);
 }
 
 static void set_clarify(char *buf, size_t n, const char *msg) {
-  if (!buf || n == 0)
-    return;
-  snprintf(buf, n, "%s", msg);
+  if (buf && n)
+    snprintf(buf, n, "%s", msg);
+}
+
+static const char *part_pkg(const NlpPart *p, const char *pkg) {
+  if (p->pkg)
+    return p->pkg;
+  if (strcmp(p->type, "mosfet") == 0 || strcmp(p->type, "ldo") == 0)
+    return "SOT-23";
+  return pkg ? pkg : "0603";
+}
+
+/* Smallest DFM-allowed chip package whose ampacity covers i (A). */
+static const char *chip_pkg_for_current(double i) {
+  if (i <= 0.1)
+    return "0603";
+  if (i <= 0.2)
+    return "0805";
+  if (i <= 0.35)
+    return "1206";
+  return NULL;
+}
+
+static int emit_design(const NlpDesign *d, const char *name, const char *pkg,
+                       const char *path, char *clar, size_t clar_len) {
+  char nets[24][48];
+  int nnet = 0, i, k, powered = 0;
+  FILE *fp;
+
+  for (i = 0; i < d->n; i++) {
+    if (strcmp(d->p[i].type, "battery") == 0)
+      powered = 1;
+    for (k = 0; k < d->p[i].n; k++) {
+      int j;
+      for (j = 0; j < nnet && strcmp(nets[j], d->p[i].nets[k]) != 0; j++)
+        ;
+      if (j == nnet && nnet < 24)
+        snprintf(nets[nnet++], sizeof(nets[0]), "%s", d->p[i].nets[k]);
+      if (compiler_rail_voltage(d->p[i].nets[k], NULL) != RAIL_NONE)
+        powered = 1;
+    }
+  }
+  if (!powered) {
+    set_clarify(clar, clar_len,
+                "No supply given; name the rail (e.g. 3V3, 5V, VIN) or state "
+                "its voltage");
+    return 1;
+  }
+  fp = fopen(path, "wb");
+  if (!fp)
+    return 1;
+  fprintf(fp, "{\n  \"schema\": \"schematic-ir.v1\",\n  \"name\": \"%s\",\n"
+              "  \"description\": \"nlp offline\",\n  \"category\": \"NLP\",\n",
+          name);
+  if (d->measure[0]) {
+    fprintf(fp, "  \"measure\": { \"node\": \"%s\"", d->measure);
+    if (d->limits)
+      fprintf(fp, ", \"min\": %.6g, \"max\": %.6g", d->mmin, d->mmax);
+    fprintf(fp, " },\n");
+  }
+  fprintf(fp, "  \"provenance\": { %s },\n  \"unmodeled\": [ %s ],\n",
+          d->prov, d->notes);
+  fprintf(fp, "  \"parts\": [\n");
+  for (i = 0; i < d->n; i++) {
+    const NlpPart *p = &d->p[i];
+    const char *t = p->type;
+    int semi = strcmp(t, "mosfet") == 0 || strcmp(t, "ldo") == 0;
+    fprintf(fp,
+            "    { \"mpn\": \"NLP-%s\", \"type\": \"%s\", \"value\": %.12g, "
+            "\"package\": \"%s\", \"v_rating\": %g, \"i_rating\": %g, "
+            "\"power_rating_w\": %g }%s\n",
+            p->role, t, p->value, part_pkg(p, pkg),
+            strcmp(t, "ldo") == 0 ? 16.0 : (semi ? 30.0 : 50.0),
+            strcmp(t, "led") == 0 ? 0.02 : (semi ? 0.5 : 1.0),
+            p->power > 0.0 ? p->power
+                           : (strcmp(t, "resistor") == 0 ? 0.125 : 0.5),
+            i + 1 < d->n ? "," : "");
+  }
+  fprintf(fp, "  ],\n  \"components\": [\n");
+  for (i = 0; i < d->n; i++)
+    fprintf(fp,
+            "    { \"role\": \"%s\", \"part_type\": \"%s\", \"quantity\": 1, "
+            "\"target_value\": %.12g, \"package\": \"%s\" }%s\n",
+            d->p[i].role, d->p[i].type, d->p[i].value, part_pkg(&d->p[i], pkg),
+            i + 1 < d->n ? "," : "");
+  fprintf(fp, "  ],\n  \"nodes\": [");
+  for (i = 0; i < nnet; i++)
+    fprintf(fp, "%s\"%s\"", i ? ", " : "", nets[i]);
+  for (i = 0; i < nnet && strcmp(nets[i], "GND") != 0; i++)
+    ;
+  fprintf(fp, "%s],\n  \"connections\": [\n", i == nnet ? ", \"GND\"" : "");
+  for (i = 0; i < d->n; i++)
+    for (k = 0; k < d->p[i].n; k++)
+      fprintf(fp, "    { \"role\": \"%s\", \"pin\": \"%s\", \"node\": \"%s\" }%s\n",
+              d->p[i].role, d->p[i].pins[k], d->p[i].nets[k],
+              (i + 1 < d->n || k + 1 < d->p[i].n) ? "," : "");
+  fprintf(fp, "  ]\n}\n");
+  fclose(fp);
+  return 0;
+}
+
+/* 3.3 → "3V3", 5 → "5V", 12 → "12V", 1.8 → "1V8". */
+static void rail_name(double v, char *out, size_t n) {
+  long tenths = lround(v * 10.0);
+  if (tenths % 10 == 0)
+    snprintf(out, n, "%ldV", tenths / 10);
+  else
+    snprintf(out, n, "%ldV%ld", tenths / 10, tenths % 10);
+}
+
+static double e24(double v) { return e_series_nearest(E_SERIES_E24, v); }
+
+/* Supply rail: explicit rail word (3V3, VIN, ...) wins, else a voltage. */
+static int find_rail(const NlpLexResult *lex, char *out, size_t n) {
+  int i;
+  for (i = 0; i < lex->ntok; i++)
+    if (lex->tokens[i].kind == NLP_Q_NONE &&
+        compiler_rail_voltage(lex->tokens[i].original, NULL) != RAIL_NONE) {
+      snprintf(out, n, "%s", lex->tokens[i].original);
+      return 0;
+    }
+  for (i = 0; i < lex->ntok; i++)
+    if (lex->tokens[i].kind == NLP_Q_VOLTAGE && lex->tokens[i].value > 0.0) {
+      rail_name(lex->tokens[i].value, out, n);
+      return 0;
+    }
+  return 1;
+}
+
+/* Largest and smallest stated voltages; count returned. */
+static int voltage_span(const NlpLexResult *lex, double *vmax, double *vmin) {
+  int i, cnt = 0;
+  for (i = 0; i < lex->ntok; i++) {
+    double v = lex->tokens[i].value;
+    if (lex->tokens[i].kind != NLP_Q_VOLTAGE || !(v > 0.0))
+      continue;
+    if (cnt == 0 || v > *vmax)
+      *vmax = v;
+    if (cnt == 0 || v < *vmin)
+      *vmin = v;
+    cnt++;
+  }
+  return cnt;
+}
+
+static int has_any(const NlpLexResult *lex, const char *const *words) {
+  for (; *words; words++)
+    if (has_word(lex, *words))
+      return 1;
+  return 0;
 }
 
 int nlp_text_to_schematic_ir(const char *text, const char *out_ir_path,
                              char *clarifying_question, size_t clarify_len) {
+  static const char *const w_pullup[] = {"pull-up", "pullup", "pull-down",
+                                         "pulldown", NULL};
+  static const char *const w_reg[] = {"regulator", "LDO", "ldo", NULL};
+  static const char *const w_mos[] = {"MOSFET", "mosfet", "N-MOS", "NMOS",
+                                      "nmos", "n-mos", NULL};
+  static const char *const w_led[] = {"LED", "led", NULL};
+  static const char *const w_ind[] = {"indicator", "status", NULL};
+  static const char *const w_revpol[] = {"reverse-polarity", "reverse",
+                                         "polarity", NULL};
+  static const char *const w_decouple[] = {"bypass", "decouple", "decoupling",
+                                           "capacitor", NULL};
+  static const char *const w_lpf[] = {"RC", "rc", "low-pass", "lowpass",
+                                      "filter", NULL};
+  static const char *const w_vague[] = {
+      "stable", "small", "normal", "Ambiguous", "ambiguous", "somewhere",
+      "Something", "something", "please", NULL};
   NlpLexResult lex;
-  const NlpToken *r;
-  const NlpToken *c;
-  const NlpToken *pkg;
-  char a[64], b[64];
-  int i;
+  NlpDesign d;
+  const NlpToken *r, *c, *pkg, *cur, *freq;
+  const char *pk;
+  char a[64], b[64], rail[48], r2[48];
+  double vmax = 0.0, vmin = 0.0;
+  int i, nv;
 
   if (clarifying_question && clarify_len)
     clarifying_question[0] = '\0';
@@ -587,131 +701,228 @@ int nlp_text_to_schematic_ir(const char *text, const char *out_ir_path,
     }
   }
 
+  memset(&d, 0, sizeof(d));
   pkg = first_kind(&lex, NLP_Q_PACKAGE);
+  pk = pkg ? pkg->original : "0603";
+  add_prov(&d, "package", pkg ? "explicit" : "defaulted");
   r = first_kind(&lex, NLP_Q_RESISTANCE);
   c = first_kind(&lex, NLP_Q_CAPACITANCE);
+  cur = first_kind(&lex, NLP_Q_CURRENT);
+  freq = first_kind(&lex, NLP_Q_FREQUENCY);
+  nv = voltage_span(&lex, &vmax, &vmin);
 
-  /* Two-terminal R between A and B (keyword optional if value+between clear) */
-  if (r && find_between(&lex, a, sizeof(a), b, sizeof(b)) == 0) {
-    return write_twoterm_ir(out_ir_path, "nlp_resistor", "resistor", r->value,
-                            pkg ? pkg->original : "0603", a, b);
+  /* Two-terminal R or C between A and B. */
+  if ((r || c) && find_between(&lex, a, sizeof(a), b, sizeof(b)) == 0) {
+    add_part(&d, "X1", r ? "resistor" : "capacitor", r ? r->value : c->value,
+             a, b);
+    return emit_design(&d, r ? "nlp_resistor" : "nlp_cap", pk, out_ir_path,
+                       clarifying_question, clarify_len);
   }
 
-  /* Two-terminal C between A and B */
-  if (c && find_between(&lex, a, sizeof(a), b, sizeof(b)) == 0) {
-    return write_twoterm_ir(out_ir_path, "nlp_cap", "capacitor", c->value,
-                            pkg ? pkg->original : "0603", a, b);
-  }
-
-  /* Pull-up on rail — needs signal; if "on RAIL" only → clarify */
-  if (r && (has_word(&lex, "pull-up") || has_word(&lex, "pullup") ||
-            has_word(&lex, "pull-down") || has_word(&lex, "pulldown"))) {
-    for (i = 0; i + 1 < lex.ntok; i++) {
-      if (lex.tokens[i].kind == NLP_Q_NONE && ci_eq(lex.tokens[i].original, "on")) {
-        int j = i + 1;
-        while (j < lex.ntok &&
-               (ci_eq(lex.tokens[j].original, "the") ||
-                ci_eq(lex.tokens[j].original, "a")))
-          j++;
-        if (j < lex.ntok && lex.tokens[j].kind == NLP_Q_NONE &&
-            is_nodeish(lex.tokens[j].original)) {
-          return write_twoterm_ir(out_ir_path, "nlp_pullup", "resistor", r->value,
-                                  pkg ? pkg->original : "0603",
-                                  lex.tokens[j].original, "SDA");
-        }
-      }
+  /* Pull-ups: I2C names both bus lines; otherwise the signal must be named. */
+  if (r && has_any(&lex, w_pullup)) {
+    if ((has_word(&lex, "I2C") || has_word(&lex, "i2c")) &&
+        find_rail(&lex, rail, sizeof(rail)) == 0) {
+      add_part(&d, "R_SDA", "resistor", r->value, rail, "SDA");
+      add_part(&d, "R_SCL", "resistor", r->value, rail, "SCL");
+      add_prov(&d, "signals", "inferred");
+      return emit_design(&d, "nlp_i2c_pullups", pk, out_ir_path,
+                         clarifying_question, clarify_len);
     }
     set_clarify(clarifying_question, clarify_len,
                 "Pull-up needs rail and signal nodes (e.g. between 3V3 and SDA)");
     return 1;
   }
 
-  /* Divider */
-  if (has_word(&lex, "divider") && r) {
-    double r1 = r->value;
-    double r2 = r->value;
+  /* Linear regulator: VIN = higher stated voltage, VOUT = lower. */
+  if (has_any(&lex, w_reg) && nv >= 2 && vmax > vmin) {
+    rail_name(vmax, rail, sizeof(rail));
+    rail_name(vmin, r2, sizeof(r2));
+    {
+      NlpPart *u = add_part(&d, "U1", "ldo", vmin, rail, r2);
+      u->pins[0] = "VIN";
+      u->pins[1] = "VOUT";
+      u->pins[2] = "GND";
+      snprintf(u->nets[2], sizeof(u->nets[2]), "GND");
+      u->n = 3;
+    }
+    add_part(&d, "C_OUT", "capacitor", 10e-6, r2, "GND");
+    snprintf(d.measure, sizeof(d.measure), "%s", r2);
+    d.mmin = vmin * 0.98;
+    d.mmax = vmin * 1.02;
+    d.limits = 1;
+    add_prov(&d, "output_cap", "defaulted");
+    add_prov(&d, "regulation_limit_pct", "defaulted");
+    return emit_design(&d, "nlp_ldo", pk, out_ir_path, clarifying_question,
+                       clarify_len);
+  }
+
+  /* N-MOS low-side switch: load rail = higher voltage, gate drive = lower. */
+  if (has_any(&lex, w_mos) && has_word(&lex, "switch")) {
+    NlpPart *q;
+    double iload = cur ? cur->value : 0.1;
+    if (nv < 2 || !(vmax > vmin)) {
+      set_clarify(clarifying_question, clarify_len,
+                  "Low-side switch needs the load voltage and the gate drive "
+                  "voltage (e.g. 12V load, 3.3V control)");
+      return 1;
+    }
+    rail_name(vmax, rail, sizeof(rail));
+    rail_name(vmin, r2, sizeof(r2));
+    {
+      /* Rated 2x dissipation. DFM ampacity is checked at the rated power:
+       * I_est = sqrt(P_rated / R) = sqrt(2) * iload. */
+      NlpPart *rl =
+          add_part(&d, "R_LOAD", "resistor", e24(vmax / iload), rail, "DRAIN");
+      rl->power = 2.0 * vmax * iload;
+      rl->pkg = chip_pkg_for_current(1.4143 * iload);
+      if (!rl->pkg) {
+        set_clarify(clarifying_question, clarify_len,
+                    "Load current too high for an on-board load resistor; "
+                    "state the load (current or resistance) under 0.25 A");
+        return 1;
+      }
+      add_note(&d, "R_LOAD stands in for the external load");
+    }
+    add_part(&d, "R_G", "resistor", 100.0, r2, "GATE");
+    add_part(&d, "R_PD", "resistor", 100e3, "GATE", "GND");
+    q = add_part(&d, "Q1", "mosfet", 1.5, "GND", "GATE"); /* S, G, D */
+    q->pins[0] = "S";
+    q->pins[1] = "G";
+    q->pins[2] = "D";
+    snprintf(q->nets[2], sizeof(q->nets[2]), "DRAIN");
+    q->n = 3;
+    snprintf(d.measure, sizeof(d.measure), "DRAIN");
+    d.mmin = 0.0;
+    d.mmax = 0.5; /* "on": drain pulled near ground */
+    d.limits = 1;
+    add_prov(&d, "load_current", cur ? "explicit" : "defaulted");
+    add_prov(&d, "gate_network", "defaulted");
+    add_prov(&d, "on_state_limit", "inferred");
+    return emit_design(&d, "nlp_lowside_switch", pk, out_ir_path,
+                       clarifying_question, clarify_len);
+  }
+
+  /* Battery input with series-diode reverse-polarity protection. */
+  if ((has_word(&lex, "battery") || has_word(&lex, "Battery")) &&
+      has_any(&lex, w_revpol)) {
+    double vbat = nv ? vmax : 3.7;
+    NlpPart *bt = add_part(&d, "BT1", "battery", vbat, "VBAT", "GND");
+    bt->pins[0] = "1";
+    bt->pins[1] = "2";
+    add_part(&d, "D_RP", "diode", 0.3, "VBAT", "VSYS"); /* Schottky Vf */
+    add_part(&d, "C_BULK", "capacitor", 10e-6, "VSYS", "GND");
+    snprintf(d.measure, sizeof(d.measure), "VSYS");
+    d.mmin = vbat - 0.5;
+    d.mmax = vbat;
+    d.limits = 1;
+    add_prov(&d, "battery_voltage", nv ? "explicit" : "defaulted");
+    add_prov(&d, "protection", "defaulted");
+    return emit_design(&d, "nlp_battery_revpol", pk, out_ir_path,
+                       clarifying_question, clarify_len);
+  }
+
+  /* LED indicator: R = (Vrail - Vf) / I. */
+  if (has_any(&lex, w_led) && has_any(&lex, w_ind)) {
+    double v, iled = cur ? cur->value : 0.002;
+    if (find_rail(&lex, rail, sizeof(rail)) != 0 ||
+        compiler_rail_voltage(rail, &v) == RAIL_NONE || v <= 2.2) {
+      set_clarify(clarifying_question, clarify_len,
+                  "LED indicator needs the rail voltage (e.g. 3.3V or 3V3)");
+      return 1;
+    }
+    add_part(&d, "R_LED", "resistor", e24((v - 2.0) / iled), rail, "LED_A");
+    add_part(&d, "D_LED", "led", 2.0, "LED_A", "GND");
+    add_prov(&d, "led_vf", "defaulted");
+    add_prov(&d, "led_current", cur ? "explicit" : "defaulted");
+    return emit_design(&d, "nlp_led_indicator", pk, out_ir_path,
+                       clarifying_question, clarify_len);
+  }
+
+  /* Divider: explicit resistors, or synthesized from Vin → Vout target. */
+  if (has_word(&lex, "divider") && (r || nv >= 2)) {
+    double r1v, r2v;
     const char *top = "VIN";
-    const char *mid = "VOUT";
-    const char *bot = "GND";
-    for (i = 0; i < lex.ntok; i++) {
-      if (&lex.tokens[i] != r && lex.tokens[i].kind == NLP_Q_RESISTANCE) {
-        r2 = lex.tokens[i].value;
-        break;
-      }
-    }
-    if (find_from_to(&lex, a, sizeof(a), b, sizeof(b)) == 0) {
+    const char *mid = (has_word(&lex, "ADC") || has_word(&lex, "adc"))
+                          ? "ADC_SENSE"
+                          : "VOUT";
+    if (find_rail(&lex, rail, sizeof(rail)) == 0)
+      top = rail;
+    if (find_from_to(&lex, a, sizeof(a), b, sizeof(b)) == 0 &&
+        compiler_rail_voltage(a, NULL) != RAIL_NONE)
       top = a;
-      if (ci_eq(b, "GND") || ci_eq(b, "gnd"))
-        bot = "GND";
-      else
-        mid = b;
+    if (has_word(&lex, "VOUT"))
+      mid = "VOUT";
+    if (r) {
+      r1v = r2v = r->value;
+      for (i = 0; i < lex.ntok; i++)
+        if (&lex.tokens[i] != r && lex.tokens[i].kind == NLP_Q_RESISTANCE) {
+          r2v = lex.tokens[i].value;
+          break;
+        }
+      add_prov(&d, "resistors", "explicit");
+    } else {
+      r2v = 10e3;
+      r1v = e24(r2v * (vmax / vmin - 1.0));
+      rail_name(vmax, rail, sizeof(rail));
+      top = rail;
+      d.mmin = vmin * 0.95; /* "roughly": ±5 % */
+      d.mmax = vmin * 1.05;
+      d.limits = 1;
+      add_prov(&d, "r_bottom", "defaulted");
+      add_prov(&d, "r_top", "inferred");
+      add_prov(&d, "target_tolerance_pct", "inferred");
     }
-    for (i = 0; i < lex.ntok; i++) {
-      if (lex.tokens[i].kind == NLP_Q_NONE &&
-          ci_eq(lex.tokens[i].original, "VIN"))
-        top = "VIN";
-      if (lex.tokens[i].kind == NLP_Q_NONE &&
-          ci_eq(lex.tokens[i].original, "VOUT"))
-        mid = "VOUT";
-      if (lex.tokens[i].kind == NLP_Q_NONE &&
-          (ci_eq(lex.tokens[i].original, "GND") ||
-           ci_eq(lex.tokens[i].original, "gnd")))
-        bot = "GND";
-    }
-    return write_divider_ir(out_ir_path, r1, r2, top, mid, bot,
-                            pkg ? pkg->original : "0603");
+    add_part(&d, "r1", "resistor", r1v, top, mid);
+    add_part(&d, "r2", "resistor", r2v, mid, "GND");
+    snprintf(d.measure, sizeof(d.measure), "%s", mid);
+    return emit_design(&d, "nlp_divider", pk, out_ir_path, clarifying_question,
+                       clarify_len);
   }
 
-  /* Bypass / decouple capacitor (no between — rail to GND) */
-  if (c && (has_word(&lex, "bypass") || has_word(&lex, "decouple") ||
-            has_word(&lex, "decoupling") || has_word(&lex, "capacitor"))) {
-    const char *rail = "VDD";
-    for (i = 0; i < lex.ntok; i++) {
-      if (lex.tokens[i].kind == NLP_Q_NONE && is_nodeish(lex.tokens[i].original) &&
-          !ci_eq(lex.tokens[i].original, "capacitor") &&
-          !ci_eq(lex.tokens[i].original, "bypass") &&
-          !ci_eq(lex.tokens[i].original, "next") &&
-          !ci_eq(lex.tokens[i].original, "to") &&
-          !ci_eq(lex.tokens[i].original, "the") &&
-          !ci_eq(lex.tokens[i].original, "a") &&
-          !ci_eq(lex.tokens[i].original, "sensor") &&
-          !ci_eq(lex.tokens[i].original, "Add") &&
-          !ci_eq(lex.tokens[i].original, "add") &&
-          !ci_eq(lex.tokens[i].original, "Place") &&
-          !ci_eq(lex.tokens[i].original, "place") &&
-          !ci_eq(lex.tokens[i].original, "Put") &&
-          !ci_eq(lex.tokens[i].original, "put") &&
-          !ci_eq(lex.tokens[i].original, "MCU") &&
-          !ci_eq(lex.tokens[i].original, "on")) {
-        rail = lex.tokens[i].original;
-        break;
+  /* RC low-pass: explicit R and C, or C synthesized for the cutoff. */
+  if (has_any(&lex, w_lpf) && ((r && c) || freq)) {
+    double rv = r ? r->value : 10e3;
+    double cv = c ? c->value
+                  : e24(1.0 / (2.0 * 3.14159265358979 * rv * freq->value));
+    add_part(&d, "r1", "resistor", rv, "VIN", "VOUT");
+    add_part(&d, "c1", "capacitor", cv, "VOUT", "GND");
+    snprintf(d.measure, sizeof(d.measure), "VOUT");
+    add_prov(&d, "r", r ? "explicit" : "defaulted");
+    add_prov(&d, "c", c ? "explicit" : "inferred");
+    return emit_design(&d, "nlp_rc", pk, out_ir_path, clarifying_question,
+                       clarify_len);
+  }
+
+  /* Decoupling: every stated capacitor from the rail to GND. */
+  if (c && has_any(&lex, w_decouple)) {
+    int n = 0;
+    if (find_rail(&lex, rail, sizeof(rail)) != 0) {
+      set_clarify(clarifying_question, clarify_len,
+                  "Which rail is decoupled? Name it (3V3, 5V, VIN) or give "
+                  "its voltage");
+      return 1;
+    }
+    for (i = 0; i < lex.ntok && d.n < 8; i++)
+      if (lex.tokens[i].kind == NLP_Q_CAPACITANCE) {
+        char role[8];
+        snprintf(role, sizeof(role), "C%d", ++n);
+        add_part(&d, role, "capacitor", lex.tokens[i].value, rail, "GND");
       }
-    }
-    if (has_word(&lex, "sensor"))
-      rail = "SENSOR_VDD";
-    return write_twoterm_ir(out_ir_path, "nlp_bypass", "capacitor", c->value,
-                            pkg ? pkg->original : "0603", rail, "GND");
+    if (cur)
+      add_note(&d, "stated load current is not modeled (no load element)");
+    return emit_design(&d, "nlp_decoupling", pk, out_ir_path,
+                       clarifying_question, clarify_len);
   }
 
-  /* RC low-pass */
-  if (r && c && (has_word(&lex, "RC") || has_word(&lex, "rc") ||
-                 has_word(&lex, "low-pass") || has_word(&lex, "lowpass") ||
-                 has_word(&lex, "filter"))) {
-    return write_rc_ir(out_ir_path, r->value, c->value, "VIN", "VOUT",
-                       pkg ? pkg->original : "0603");
-  }
-
-  /* R from A to B */
+  /* R from A to B. */
   if (r && find_from_to(&lex, a, sizeof(a), b, sizeof(b)) == 0) {
-    return write_twoterm_ir(out_ir_path, "nlp_resistor", "resistor", r->value,
-                            pkg ? pkg->original : "0603", a, b);
+    add_part(&d, "X1", "resistor", r->value, a, b);
+    return emit_design(&d, "nlp_resistor", pk, out_ir_path, clarifying_question,
+                       clarify_len);
   }
 
-  if (has_word(&lex, "stable") || has_word(&lex, "small") ||
-      has_word(&lex, "normal") || has_word(&lex, "Ambiguous") ||
-      has_word(&lex, "ambiguous") || has_word(&lex, "somewhere") ||
-      has_word(&lex, "Something") || has_word(&lex, "something") ||
-      has_word(&lex, "please")) {
+  if (has_any(&lex, w_vague)) {
     set_clarify(clarifying_question, clarify_len,
                 "Ambiguous prompt; specify topology, values, and nodes");
     return 1;
@@ -719,6 +930,6 @@ int nlp_text_to_schematic_ir(const char *text, const char *out_ir_path,
 
   set_clarify(clarifying_question, clarify_len,
               "Unsupported offline NLP pattern; clarify component, value, "
-              "and nodes (between/from/to/divider/bypass/RC)");
+              "and nodes (between/from/to/divider/bypass/RC/LDO/switch/LED)");
   return 1;
 }

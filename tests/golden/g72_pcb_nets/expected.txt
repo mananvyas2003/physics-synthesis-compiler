@@ -1,2 +1,0 @@
-g72_pcb_nets
-ok=1

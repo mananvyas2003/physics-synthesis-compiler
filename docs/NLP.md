@@ -6,7 +6,7 @@
 synth parse --prompt-text "Put a 10k resistor between 3V3 and ADC_SENSE" -o ir.json
 synth parse --prompt prompt.txt -o ir.json
 synth parse --prompt-text "..." --neural   # optional ONNX; fail-closed if absent
-synth generate --prompt-text "..." -o out/          # offline NLP if no API key
+synth generate --prompt-text "..." -o out/          # always the offline NLP (Gemini removed)
 synth generate --prompt fixtures/prompts/001.txt --offline-prompt -o out/  # corpus map
 ```
 
@@ -35,7 +35,7 @@ Free-form corpus: `fixtures/nlp_freeform/p01.txt`…`p30.txt` (g77).
 | `--neural` | fail-closed clarifying question |
 | Physics / MPN / DFM / PCB | never owned by neural path |
 
-CMake: `SYNTH_ENABLE_ONNX` (off by default) — currently only a compile define; ORT not vendored.
+No CMake option for ONNX; ORT is not vendored.
 
 ## Not NLP
 
@@ -45,4 +45,25 @@ CMake: `SYNTH_ENABLE_ONNX` (off by default) — currently only a compile define;
 
 - Real ORT session + exported BiLSTM weights
 - Full entity/relation graph for every engineering phrase
-- Automatic recording of live Gemini → cassette (manual copy of `*.resp.json` for now)
+- Thermistor / sensor front-ends, rail-only requests ("3.3 V rail capable of 200 mA"),
+  multi-stage filters: refused with a clarifying question.
+
+## Value synthesis (deterministic, `nlp/nlp.c`)
+
+| Pattern | Synthesis | Provenance written |
+|---------|-----------|--------------------|
+| Divider Vin → ~Vout | R2 = 10k, R1 = E24(R2·(Vin/Vout − 1)); measure ±5 % | r_bottom defaulted, r_top inferred |
+| RC low-pass at f | R = 10k (or stated), C = E24(1/(2πRf)) | c inferred |
+| LED indicator | R = E24((Vrail − 2.0)/I), I = 2 mA unless stated | led_vf, led_current defaulted |
+| N-MOS low-side switch | load R = E24(Vload/I), I = 100 mA unless stated; rated 2×P; package by ampacity | load_current defaulted |
+| LDO Vin → Vout | behavioral LDO + 10 µF; measure ±2 % | output_cap defaulted |
+| I2C pull-ups | R on SDA and SCL to the rail | signals inferred |
+| Battery reverse polarity | 3.7 V unless stated, Schottky series diode, 10 µF | battery_voltage defaulted |
+| Decoupling | every stated capacitor rail → GND; stated load current → `unmodeled` | — |
+
+Any design whose nets carry no supply (no rail name, voltage, or battery) is refused.
+
+## Measured coverage
+
+See [REPAIR_PLAN.md §5](REPAIR_PLAN.md): §62 prompts (g83) and the 30-prompt corpus (g77,
+14 verify end to end, 16 refused, 0 emitted-but-invalid).

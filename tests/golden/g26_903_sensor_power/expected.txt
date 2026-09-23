@@ -3,3 +3,4 @@ bound_components=6
 bound_caps=2
 physics2_caps=2
 sensor_vdd_ok=1
+led_operating_point_ok=1

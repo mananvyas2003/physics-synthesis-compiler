@@ -6,7 +6,6 @@
 #include "db.h"
 #include "diag_error.h"
 #include "emit.h"
-#include "gemini_schematic.h"
 #include "llm_provider.h"
 #include "mfg_dfm.h"
 #include "schematic_load.h"
@@ -22,9 +21,12 @@
 #ifdef _WIN32
 #include <direct.h>
 #define synth_mkdir(path) _mkdir(path)
+#define synth_rmdir(path) _rmdir(path)
 #else
 #include <sys/stat.h>
+#include <unistd.h>
 #define synth_mkdir(path) mkdir((path), 0755)
+#define synth_rmdir(path) rmdir(path)
 #endif
 
 static int ensure_dir(const char *path) {
@@ -32,6 +34,29 @@ static int ensure_dir(const char *path) {
     return 1;
   synth_mkdir(path);
   return 0;
+}
+
+static void remove_named(const char *dir, const char *name) {
+  char *p = dir && name ? cli_join_path(dir, name) : NULL;
+  if (p)
+    remove(p);
+  free(p);
+}
+
+static void drop_published_emit(const char *out_dir) {
+  remove_named(out_dir, "design.net");
+  remove_named(out_dir, "bom.csv");
+  remove_named(out_dir, "design.kicad_sch");
+  remove_named(out_dir, "design-snapshot.v1.json");
+  remove_named(out_dir, "erc.v1.json");
+}
+
+/* Move staging → dest. Failure leaves dest unchanged. */
+static int publish_file(const char *from, const char *to) {
+  if (!from || !to)
+    return 0;
+  remove(to);
+  return rename(from, to) == 0;
 }
 
 static int write_text_file(const char *path, const char *text) {
@@ -73,13 +98,18 @@ static void write_error_report(const char *out_dir, const char *what,
   free(path);
 }
 
+/* Manifest + DB/binding/DFM telemetry; written on success and failure. */
 static void write_build_manifest(const char *out_dir, const char *design_json,
                                  const char *catalogue_db,
-                                 const char *dfm_profile) {
+                                 const char *dfm_profile, DB *db,
+                                 const CompiledSchematic *sch,
+                                 const MfgDfmResult *dfm, const char *stage) {
   char *path;
   cJSON *root;
   char *printed;
   const char *seed_env = getenv("SYNTH_SEED");
+  FILE *probe;
+  int i;
   if (!out_dir)
     return;
   path = cli_join_path(out_dir, "build-manifest.v1.json");
@@ -93,6 +123,41 @@ static void write_build_manifest(const char *out_dir, const char *design_json,
   cJSON_AddStringToObject(root, "catalogue", catalogue_db ? catalogue_db : "");
   cJSON_AddStringToObject(root, "dfm_profile", dfm_profile ? dfm_profile : "");
   cJSON_AddStringToObject(root, "seed", seed_env && seed_env[0] ? seed_env : "0");
+  cJSON_AddStringToObject(root, "stage", stage);
+  {
+    cJSON *dbj = cJSON_CreateObject();
+    probe = catalogue_db && catalogue_db[0] ? fopen(catalogue_db, "rb") : NULL;
+    cJSON_AddBoolToObject(dbj, "catalogue_exists", probe != NULL);
+    if (probe)
+      fclose(probe);
+    cJSON_AddNumberToObject(dbj, "work_db_parts", db ? DB_CountParts(db) : 0);
+    cJSON_AddItemToObject(root, "db", dbj);
+    printf("[DB] catalogue=%s exists=%d work_db_parts=%d\n",
+           catalogue_db && catalogue_db[0] ? catalogue_db : "(none)",
+           cJSON_IsTrue(cJSON_GetObjectItem(dbj, "catalogue_exists")),
+           db ? DB_CountParts(db) : 0);
+  }
+  if (sch && sch->component_count > 0) {
+    cJSON *b = cJSON_CreateArray();
+    for (i = 0; i < sch->component_count; i++) {
+      const CompiledComponent *c = &sch->components[i];
+      cJSON *e = cJSON_CreateObject();
+      cJSON_AddStringToObject(e, "role", c->role);
+      cJSON_AddStringToObject(e, "mpn", c->part.mpn);
+      cJSON_AddStringToObject(e, "alternate_mpn",
+                              c->has_alternate ? c->alternate_mpn : "");
+      cJSON_AddStringToObject(e, "rationale", c->rationale);
+      cJSON_AddItemToArray(b, e);
+      printf("[BIND] %s -> %s%s%s\n", c->role, c->part.mpn,
+             c->has_alternate ? " alt " : "",
+             c->has_alternate ? c->alternate_mpn : "");
+    }
+    cJSON_AddItemToObject(root, "bindings", b);
+  }
+  if (dfm && dfm->summary[0]) {
+    cJSON_AddStringToObject(root, "dfm_summary", dfm->summary);
+    printf("[DFM] %s\n", dfm->summary);
+  }
   printed = cJSON_Print(root);
   cJSON_Delete(root);
   if (printed) {
@@ -226,7 +291,9 @@ int cmd_generate_design(const char *design_json, const char *out_dir,
   char *snap_path = NULL;
   char *verify_path = NULL;
   char *dfm_path = NULL;
-  char *pcb_path = NULL;
+  char *work_dir = NULL;
+  char *pub_net = NULL, *pub_bom = NULL, *pub_sch = NULL, *pub_snap = NULL;
+  char *pub_erc = NULL;
   char topology_name[64];
   DB *db = NULL;
   CompiledSchematic schematic;
@@ -261,7 +328,9 @@ int cmd_generate_design(const char *design_json, const char *out_dir,
                        "Fix the schematic IR fields listed in the error, then "
                        "regenerate.",
                        0);
-    write_build_manifest(out_dir, design_json, catalogue_db, dfm_profile);
+    drop_published_emit(out_dir);
+    write_build_manifest(out_dir, design_json, catalogue_db, dfm_profile, NULL,
+                         NULL, NULL, "ir_validation_failed");
     return 1;
   }
 
@@ -271,17 +340,25 @@ int cmd_generate_design(const char *design_json, const char *out_dir,
     return 1;
   }
 
-  db_path = cli_join_path(out_dir, "generate_work.db");
-  net_path = cli_join_path(out_dir, "design.net");
-  bom_path = cli_join_path(out_dir, "bom.csv");
-  sch_path = cli_join_path(out_dir, "design.kicad_sch");
-  snap_path = cli_join_path(out_dir, "design-snapshot.v1.json");
+  work_dir = cli_join_path(out_dir, ".gen");
+  if (!work_dir || ensure_dir(work_dir) != 0)
+    goto done;
+  db_path = cli_join_path(work_dir, "generate_work.db");
+  net_path = cli_join_path(work_dir, "design.net");
+  bom_path = cli_join_path(work_dir, "bom.csv");
+  sch_path = cli_join_path(work_dir, "design.kicad_sch");
+  snap_path = cli_join_path(work_dir, "design-snapshot.v1.json");
   verify_path = cli_join_path(out_dir, "verification.v1.json");
   dfm_path = cli_join_path(out_dir, "mfg-dfm.v1.json");
-  pcb_path = cli_join_path(out_dir, "design.kicad_pcb");
+  pub_net = cli_join_path(out_dir, "design.net");
+  pub_bom = cli_join_path(out_dir, "bom.csv");
+  pub_sch = cli_join_path(out_dir, "design.kicad_sch");
+  pub_snap = cli_join_path(out_dir, "design-snapshot.v1.json");
+  pub_erc = cli_join_path(out_dir, "erc.v1.json");
 
   if (!db_path || !net_path || !bom_path || !sch_path || !snap_path ||
-      !verify_path || !dfm_path || !pcb_path)
+      !verify_path || !dfm_path || !pub_net || !pub_bom || !pub_sch ||
+      !pub_snap || !pub_erc)
     goto done;
 
   remove(db_path);
@@ -335,8 +412,6 @@ int cmd_generate_design(const char *design_json, const char *out_dir,
     goto done;
   }
 
-  write_build_manifest(out_dir, design_json, catalogue_db, dfm_profile);
-
   if (verify_bound_schematic(&schematic, verify_path, &verify) != 0) {
     fprintf(stderr, "[GENERATE] verification failed: %s\n", verify.summary);
     printf("[GENERATE] wrote %s (failed)\n", verify_path);
@@ -374,7 +449,6 @@ int cmd_generate_design(const char *design_json, const char *out_dir,
   if (!emit_ki_cad_netlist(net_path, &schematic) ||
       !emit_bom_csv(bom_path, &schematic) ||
       !compiler_write_kicad_sch(sch_path, &schematic) ||
-      !emit_kicad_pcb(pcb_path, &schematic) ||
       !emit_design_snapshot_v1(snap_path, &schematic)) {
     fprintf(stderr, "[GENERATE] emit failed\n");
     goto done;
@@ -388,12 +462,11 @@ int cmd_generate_design(const char *design_json, const char *out_dir,
   printf("[GENERATE] wrote %s\n", net_path);
   printf("[GENERATE] wrote %s\n", bom_path);
   printf("[GENERATE] wrote %s\n", sch_path);
-  printf("[GENERATE] wrote %s\n", pcb_path);
   printf("[GENERATE] wrote %s\n", snap_path);
   printf("[GENERATE] wrote %s\n", verify_path);
   {
     /* Lightweight ERC: all compiled pins connected (already enforced upstream). */
-    char *erc_path = cli_join_path(out_dir, "erc.v1.json");
+    char *erc_path = cli_join_path(work_dir, "erc.v1.json");
     cJSON *er = cJSON_CreateObject();
     cJSON *errs = cJSON_CreateArray();
     char *printed;
@@ -421,9 +494,42 @@ int cmd_generate_design(const char *design_json, const char *out_dir,
   rc = 0;
 
 done:
+  if (rc == 0) {
+    char *erc_work = work_dir ? cli_join_path(work_dir, "erc.v1.json") : NULL;
+    if (!publish_file(net_path, pub_net) || !publish_file(bom_path, pub_bom) ||
+        !publish_file(sch_path, pub_sch) || !publish_file(snap_path, pub_snap) ||
+        (erc_work && !publish_file(erc_work, pub_erc))) {
+      fprintf(stderr, "[GENERATE] publish from staging failed\n");
+      rc = 1;
+    }
+    free(erc_work);
+  }
+  if (rc != 0) {
+    if (net_path)
+      remove(net_path);
+    if (bom_path)
+      remove(bom_path);
+    if (sch_path)
+      remove(sch_path);
+    if (snap_path)
+      remove(snap_path);
+    remove_named(work_dir, "erc.v1.json");
+    drop_published_emit(out_dir);
+  }
+  write_build_manifest(out_dir, design_json, catalogue_db, dfm_profile, db,
+                       &schematic, &dfm, rc == 0 ? "published" : "failed");
   if (db)
     DB_close(db);
+  if (db_path) {
+    remove(db_path);
+    remove_named(work_dir, "generate_work.db-journal");
+    remove_named(work_dir, "generate_work.db-wal");
+    remove_named(work_dir, "generate_work.db-shm");
+  }
+  if (work_dir)
+    synth_rmdir(work_dir);
   compiler_free_schematic(&schematic);
+  free(work_dir);
   free(db_path);
   free(net_path);
   free(bom_path);
@@ -431,7 +537,11 @@ done:
   free(snap_path);
   free(verify_path);
   free(dfm_path);
-  free(pcb_path);
+  free(pub_net);
+  free(pub_bom);
+  free(pub_sch);
+  free(pub_snap);
+  free(pub_erc);
   return rc;
 }
 
@@ -576,11 +686,8 @@ int cmd_generate(int argc, char **argv) {
       free(ir_out);
       return 1;
     }
-    printf("[GENERATE] prompt IR %s (live=%s)\n", resolved_design,
-           (!force_offline_prompt && gemini_replay_active())
-               ? "replay"
-               : ((!force_offline_prompt && gemini_api_key_present()) ? "gemini"
-                                                                     : "offline"));
+    printf("[GENERATE] prompt IR %s (frontend=%s)\n", resolved_design,
+           force_offline_prompt ? "corpus" : "nlp");
     free(ir_out);
     design_json = resolved_design;
   } else if (spec_path) {

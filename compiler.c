@@ -60,36 +60,75 @@ static double default_target_for_type(PartTypes type) {
   }
 }
 
-/* Infer rail voltage from topology node names — not a universal 5.0. */
+RailSource compiler_rail_voltage(const char *net, double *volts) {
+  const char *p = net;
+  double whole = 0.0;
+  double frac = 0.0;
+  double scale = 0.1;
+  int digits = 0;
+
+  if (volts)
+    *volts = 0.0;
+  if (!net || !net[0])
+    return RAIL_NONE;
+  if (strcmp(net, "VIN") == 0 || strcmp(net, "VCC") == 0 ||
+      strcmp(net, "VBUS") == 0) {
+    if (volts)
+      *volts = 5.0;
+    return RAIL_DEFAULTED;
+  }
+  /* <digits>V<digits>: 3V3, 5V, 12V, 1V8 */
+  while (*p >= '0' && *p <= '9') {
+    whole = whole * 10.0 + (*p - '0');
+    p++;
+    digits++;
+  }
+  if (digits == 0 || *p != 'V')
+    return RAIL_NONE;
+  p++;
+  while (*p >= '0' && *p <= '9') {
+    frac += (*p - '0') * scale;
+    scale *= 0.1;
+    p++;
+  }
+  if (*p != '\0' || whole + frac <= 0.0)
+    return RAIL_NONE;
+  if (volts)
+    *volts = whole + frac;
+  return RAIL_EXPLICIT;
+}
+
+RailSource compiler_schematic_rail(const CompiledSchematic *schematic,
+                                   const char *net, double *volts) {
+  int i;
+  if (schematic && net) {
+    for (i = 0; i < schematic->rail_count; i++) {
+      if (strcmp(schematic->rail_names[i], net) == 0) {
+        if (volts)
+          *volts = schematic->rail_volts[i];
+        return RAIL_EXPLICIT;
+      }
+    }
+  }
+  return compiler_rail_voltage(net, volts);
+}
+
+/* First rail touched by the topology or component; 0 → unknown (no derating). */
 static double infer_supply_v(const TopologyNodeRow *nodes, int node_count,
                              const CompiledComponent *cc) {
   int i;
+  double v;
   for (i = 0; i < node_count; i++) {
-    const char *n = nodes[i].node_name;
-    if (!n)
-      continue;
-    if (strcmp(n, "5V") == 0 || strcmp(n, "VBUS") == 0)
-      return 5.0;
-    if (strcmp(n, "3V3") == 0)
-      return 3.3;
-    if (strcmp(n, "12V") == 0)
-      return 12.0;
-    if (strcmp(n, "VIN") == 0 || strcmp(n, "VCC") == 0)
-      return 5.0;
+    if (compiler_rail_voltage(nodes[i].node_name, &v) != RAIL_NONE)
+      return v;
   }
   if (cc) {
-    int p;
-    for (p = 0; p < cc->pin_count && p < 8; p++) {
-      const char *n = cc->nodes[p];
-      if (strcmp(n, "5V") == 0 || strcmp(n, "VBUS") == 0)
-        return 5.0;
-      if (strcmp(n, "3V3") == 0)
-        return 3.3;
-      if (strcmp(n, "12V") == 0)
-        return 12.0;
+    for (i = 0; i < cc->pin_count && i < 8; i++) {
+      if (compiler_rail_voltage(cc->nodes[i], &v) != RAIL_NONE)
+        return v;
     }
   }
-  return 0.0; /* unknown — skip fake derating stress */
+  return 0.0;
 }
 
 static DBResult rebind_with_solved_stress(DB *db, CompiledSchematic *out);
@@ -123,13 +162,92 @@ static void clear_schematic(CompiledSchematic *schematic) {
 
 typedef struct {
   char role[64];
+  char part_type[16];
   double target_value;
   char package[32];
   int has_hint;
 } BindHint;
 
+/* IR "measure" and "rails" → schematic (validated by schematic_load.c). */
+static void load_design_intent(cJSON *root, CompiledSchematic *sch) {
+  cJSON *m = cJSON_GetObjectItemCaseSensitive(root, "measure");
+  cJSON *rails = cJSON_GetObjectItemCaseSensitive(root, "rails");
+  cJSON *r;
+  if (cJSON_IsObject(m)) {
+    const char *node =
+        cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(m, "node"));
+    cJSON *mn = cJSON_GetObjectItemCaseSensitive(m, "min");
+    cJSON *mx = cJSON_GetObjectItemCaseSensitive(m, "max");
+    if (node)
+      strncpy(sch->measure_node, node, sizeof(sch->measure_node) - 1);
+    if (cJSON_IsNumber(mn)) {
+      sch->measure_min = mn->valuedouble;
+      sch->measure_has_min = 1;
+    }
+    if (cJSON_IsNumber(mx)) {
+      sch->measure_max = mx->valuedouble;
+      sch->measure_has_max = 1;
+    }
+  }
+  if (cJSON_IsObject(rails)) {
+    cJSON_ArrayForEach(r, rails) {
+      if (sch->rail_count == 8 || !cJSON_IsNumber(r))
+        continue;
+      strncpy(sch->rail_names[sch->rail_count], r->string,
+              sizeof(sch->rail_names[0]) - 1);
+      sch->rail_volts[sch->rail_count++] = r->valuedouble;
+    }
+  }
+  cJSON_ArrayForEach(r, cJSON_GetObjectItemCaseSensitive(root, "parts")) {
+    const char *mpn =
+        cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(r, "mpn"));
+    cJSON *model = cJSON_GetObjectItemCaseSensitive(r, "model");
+    cJSON *kv;
+    if (!mpn || !cJSON_IsObject(model) || sch->model_count == 16)
+      continue;
+    strncpy(sch->models[sch->model_count].mpn, mpn,
+            sizeof(sch->models[0].mpn) - 1);
+    cJSON_ArrayForEach(kv, model) {
+      int n = sch->models[sch->model_count].n;
+      if (n == 8 || !cJSON_IsNumber(kv))
+        continue;
+      strncpy(sch->models[sch->model_count].key[n], kv->string,
+              sizeof(sch->models[0].key[0]) - 1);
+      sch->models[sch->model_count].val[n] = kv->valuedouble;
+      sch->models[sch->model_count].n++;
+    }
+    sch->model_count++;
+  }
+  {
+    cJSON *tr = cJSON_GetObjectItemCaseSensitive(root, "transient");
+    cJSON *stop = cJSON_GetObjectItemCaseSensitive(tr, "stop_s");
+    cJSON *step = cJSON_GetObjectItemCaseSensitive(tr, "step_s");
+    if (cJSON_IsNumber(stop) && cJSON_IsNumber(step)) {
+      sch->tran_stop_s = stop->valuedouble;
+      sch->tran_step_s = step->valuedouble;
+    }
+  }
+}
+
+/* IR parts[].model value for this MPN, if present. */
+static int part_model(const CompiledSchematic *sch, const char *mpn,
+                      const char *key, double *v) {
+  int m, k;
+  for (m = 0; m < sch->model_count; m++) {
+    if (strcmp(sch->models[m].mpn, mpn) != 0)
+      continue;
+    for (k = 0; k < sch->models[m].n; k++)
+      if (strcmp(sch->models[m].key[k], key) == 0) {
+        *v = sch->models[m].val[k];
+        return 1;
+      }
+  }
+  return 0;
+}
+
 static int load_bind_hints(const char *design_json_path, BindHint *hints,
-                           int max_hints, int *out_count) {
+                           int max_hints, int *out_count,
+                           CompiledSchematic *sch) {
   FILE *fp;
   long size;
   char *buf;
@@ -174,6 +292,7 @@ static int load_bind_hints(const char *design_json_path, BindHint *hints,
   if (!root)
     return 1;
 
+  load_design_intent(root, sch);
   components = cJSON_GetObjectItemCaseSensitive(root, "components");
   if (cJSON_IsArray(components)) {
     cJSON_ArrayForEach(item, components) {
@@ -188,6 +307,13 @@ static int load_bind_hints(const char *design_json_path, BindHint *hints,
         continue;
       memset(&hints[count], 0, sizeof(hints[count]));
       strncpy(hints[count].role, role, sizeof(hints[count].role) - 1);
+      {
+        const char *pt = cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(item, "part_type"));
+        if (pt)
+          strncpy(hints[count].part_type, pt,
+                  sizeof(hints[count].part_type) - 1);
+      }
       tv = cJSON_GetObjectItemCaseSensitive(item, "target_value");
       pkg = cJSON_GetObjectItemCaseSensitive(item, "package");
       if (unit_parse_number_or_string(tv, &hints[count].target_value) == 0 &&
@@ -239,7 +365,7 @@ DBResult compiler_compile_from_design(DB *db, const char *topology_name,
     return DB_ERROR;
 
   clear_schematic(out);
-  (void)load_bind_hints(design_json_path, hints, 32, &hint_count);
+  (void)load_bind_hints(design_json_path, hints, 32, &hint_count, out);
 
   result =
       DB_GetTopology(db, topology_name, components, 32, &component_count, nodes,
@@ -379,6 +505,9 @@ DBResult compiler_compile_from_design(DB *db, const char *topology_name,
 
     target = default_target_for_type(tc->part_type);
     hint = find_hint(hints, hint_count, tc->role_name);
+    /* IR part_type disambiguates bjt/mosfet and opamp/ldo (same DB enum). */
+    strncpy(cc->kind, hint && hint->part_type[0] ? hint->part_type : type_name,
+            sizeof(cc->kind) - 1);
     if (hint) {
       if (hint->has_hint && hint->target_value > 0.0)
         target = hint->target_value;
@@ -917,14 +1046,23 @@ bool compiler_physics_design_add(CompilerPhysDesign *design,
       return false;
     break;
   case COMPILER_PHYS_DIODE:
+  case COMPILER_PHYS_BATTERY:
     if (value <= 0.0 || terminal_count != 2)
       return false;
     break;
-  case COMPILER_PHYS_VCVS:
-  case COMPILER_PHYS_VCCS:
-  case COMPILER_PHYS_CCVS:
-  case COMPILER_PHYS_CCCS:
-    if (!isfinite(value) || terminal_count != 4)
+  case COMPILER_PHYS_BJT:
+  case COMPILER_PHYS_NMOS:
+  case COMPILER_PHYS_PMOS:
+  case COMPILER_PHYS_LDO:
+    if (value <= 0.0 || terminal_count != 3)
+      return false;
+    break;
+  case COMPILER_PHYS_SWITCH:
+    if (value <= 0.0 || terminal_count != 2)
+      return false;
+    break;
+  case COMPILER_PHYS_OPAMP:
+    if (value <= 0.0 || (terminal_count != 4 && terminal_count != 5))
       return false;
     break;
   default:
@@ -1081,18 +1219,39 @@ static bool compiler_init_element_primitive(const CompilerPhysElement *element,
                                          element->value, n, vt,
                                          element->tolerance_pct);
   }
-  case COMPILER_PHYS_VCVS:
-    return physics2_primitive_init_vcvs(primitive, element->name, element->value,
+  case COMPILER_PHYS_BJT:
+    return physics2_primitive_init_bjt(
+        primitive, element->name, element->value, element->param[0],
+        element->param[1], (1.380649e-23 * 300.0) / 1.602176634e-19,
+        element->tolerance_pct);
+  case COMPILER_PHYS_NMOS:
+    return physics2_primitive_init_nmos(primitive, element->name,
+                                        element->value, element->param[0],
+                                        element->param[1], 1.0,
                                         element->tolerance_pct);
-  case COMPILER_PHYS_VCCS:
-    return physics2_primitive_init_vccs(primitive, element->name, element->value,
+  case COMPILER_PHYS_PMOS:
+    return physics2_primitive_init_pmos(primitive, element->name,
+                                        element->value, element->param[0],
+                                        element->param[1], 1.0,
                                         element->tolerance_pct);
-  case COMPILER_PHYS_CCVS:
-    return physics2_primitive_init_ccvs(primitive, element->name, element->value,
-                                        element->tolerance_pct);
-  case COMPILER_PHYS_CCCS:
-    return physics2_primitive_init_cccs(primitive, element->name, element->value,
-                                        element->tolerance_pct);
+  case COMPILER_PHYS_SWITCH:
+    return physics2_primitive_init_switch(
+        primitive, element->name, element->value,
+        element->param[0] > 0.0 ? element->param[0] : 1.0e9,
+        element->param[1] >= 0.5 ? 1 : 0);
+  case COMPILER_PHYS_OPAMP:
+    return element->terminal_count == 5
+               ? physics2_primitive_init_opamp_railed(primitive, element->name,
+                                                      element->value)
+               : physics2_primitive_init_opamp(primitive, element->name,
+                                               element->value);
+  case COMPILER_PHYS_LDO:
+    return physics2_primitive_init_ldo(primitive, element->name,
+                                       element->value, element->param[0],
+                                       element->param[1], element->param[2]);
+  case COMPILER_PHYS_BATTERY:
+    return physics2_primitive_init_battery(primitive, element->name,
+                                           element->value, element->param[0]);
   default:
     return false;
   }
@@ -1123,39 +1282,61 @@ NodeId compiler_physics_find_node(const CompiledPhysicsProgram *compiled,
   return PHYSICS2_NODE_NONE;
 }
 
-static int name_is_power_pos(const char *name) {
-  return name && (strcmp(name, "VIN") == 0 || strcmp(name, "VBUS") == 0 ||
-                  strcmp(name, "VCC") == 0 || strcmp(name, "3V3") == 0 ||
-                  strcmp(name, "5V") == 0);
+static int net_in(char (*list)[64], int count, const char *net) {
+  int i;
+  for (i = 0; i < count; i++)
+    if (strcmp(list[i], net) == 0)
+      return 1;
+  return 0;
 }
 
+/*
+ * Default model parameters for catalogue parts that carry one "value".
+ * IR parts[].model overrides these per MPN. Catalogue columns are the
+ * upgrade if a part library starts shipping device params.
+ */
+#define DEF_BJT_IS 1.0e-14
+#define DEF_BJT_AF 0.99
+#define DEF_BJT_AR 0.5
+#define DEF_MOS_K 0.5       /* A/V^2 */
+#define DEF_MOS_LAMBDA 0.01 /* 1/V */
+#define DEF_OPAMP_GAIN 1.0e5
+#define DEF_LDO_DROPOUT 0.3 /* V */
+#define DEF_LDO_ROUT 0.05   /* ohm */
+#define DEF_LDO_ILIMIT 0.5  /* A */
+#define DEF_BATT_RINT 0.1   /* ohm */
+
 bool compiler_schematic_to_phys_design(const CompiledSchematic *schematic,
-                                       double supply_v,
                                        CompilerPhysDesign *out) {
   int i;
-  int has_gnd = 0;
-  int has_pwr = 0;
-  char pwr_name[64] = "";
+  char rails[8][64];
+  int rail_count = 0;
+  char driven[8][64]; /* nets driven by a battery / LDO output, not rails */
+  int driven_count = 0;
+  const double vt = (1.380649e-23 * 300.0) / 1.602176634e-19;
 
   if (!schematic || !out)
     return false;
 
   compiler_physics_design_init(out);
 
-  if (!isfinite(supply_v) || supply_v == 0.0)
-    supply_v = 5.0;
-
   for (i = 0; i < schematic->component_count; i++) {
     const CompiledComponent *c = &schematic->components[i];
+    const char *kn = c->kind;
     CompilerPhysKind kind = COMPILER_PHYS_NONE;
     const char *terms[8];
+    const char *t[5];
     uint8_t nterm;
     int p;
     double value = c->part.value;
+    double diode_n = 1.0;
+    double param[3] = {0.0, 0.0, 0.0};
+    int model_from_part = 0;
+    const char *drives = NULL;
 
     nterm = (uint8_t)(c->pin_count > 0 ? c->pin_count : 2);
-    if (nterm > PHYSICS2_MAX_TERMINALS)
-      nterm = PHYSICS2_MAX_TERMINALS;
+    if (nterm > 8)
+      nterm = 8;
     for (p = 0; p < (int)nterm; p++) {
       terms[p] = c->nodes[p][0] ? c->nodes[p]
                                 : (p == 0 ? c->node1 : c->node2);
@@ -1165,13 +1346,10 @@ bool compiler_schematic_to_phys_design(const CompiledSchematic *schematic,
         compiler_physics_design_free(out);
         return false;
       }
-      if (strcmp(terms[p], "GND") == 0)
-        has_gnd = 1;
-      if (name_is_power_pos(terms[p])) {
-        has_pwr = 1;
-        strncpy(pwr_name, terms[p], sizeof(pwr_name) - 1);
-      }
     }
+    /* Default: pins in part_lib order map 1:1 to Physics2 terminals. */
+    for (p = 0; p < 5 && p < (int)nterm; p++)
+      t[p] = terms[p];
 
     switch (c->part.type) {
     case PART_RESISTOR:
@@ -1183,67 +1361,209 @@ bool compiler_schematic_to_phys_design(const CompiledSchematic *schematic,
     case PART_INDUCTOR:
       kind = COMPILER_PHYS_INDUCTOR;
       break;
-    case PART_DIODE: {
+    case PART_DIODE:
       kind = COMPILER_PHYS_DIODE;
-      /* Catalogue LED Vf is 1.2–3.5; Shockley Isat is ≪ 1e-6. */
-      if (!(value > 0.0 && value < 1.0e-6))
-        value = 1.0e-12;
+      if (value > 0.0 && value < 1.0e-6) {
+        /* Already a Shockley saturation current. */
+      } else if (value >= 0.2 && value <= 4.5) {
+        /* Catalogue value is forward voltage Vf. Solve Is so that
+         * I(Vf) = I_ref with n = 2 (typical LED / rectifier ideality).
+         * ponytail: fixed I_ref = 20 mA datasheet test point; carry Vf@If
+         * per part when the catalogue has it. */
+        const double i_ref = 0.020;
+        diode_n = 2.0;
+        value = i_ref / (exp(value / (diode_n * vt)) - 1.0);
+      } else {
+        diag_set_error("PHYSICS_UNSUPPORTED: diode '%s' value %g is neither "
+                       "Is (<1e-6 A) nor Vf (0.2-4.5 V).",
+                       c->role, value);
+        compiler_physics_design_free(out);
+        return false;
+      }
+      break;
+    case PART_TRANSISTOR:
+      /* part_lib order E,B,C (S,G,D) → Physics2 C,B,E (D,G,S). */
+      if (nterm != 3)
+        break;
+      t[0] = terms[2];
+      t[1] = terms[1];
+      t[2] = terms[0];
+      if (strcmp(kn, "mosfet") == 0 || strcmp(kn, "pmos") == 0) {
+        kind = strcmp(kn, "pmos") == 0 ? COMPILER_PHYS_PMOS
+                                       : COMPILER_PHYS_NMOS;
+        value = (value >= 0.3 && value <= 5.0) ? value : 1.0; /* |Vth| */
+        param[0] = DEF_MOS_K;
+        param[1] = DEF_MOS_LAMBDA;
+      } else {
+        kind = COMPILER_PHYS_BJT;
+        value = DEF_BJT_IS;
+        param[0] = DEF_BJT_AF;
+        param[1] = DEF_BJT_AR;
+      }
+      break;
+    case PART_CONNECTOR:
+      if (strcmp(kn, "switch") == 0 && nterm == 2) {
+        kind = COMPILER_PHYS_SWITCH;
+        /* value = Ron; default ON. Off state needs an IR control field. */
+        value = value > 0.0 ? value : 0.1;
+        param[0] = 1.0e9;
+        param[1] = 1.0;
+      } else if (strcmp(kn, "connector") == 0 && nterm == 2) {
+        /* Pins are separate nets: open, except the datasheet insulation
+         * resistance (typ >= 1 GOhm) between them. */
+        kind = COMPILER_PHYS_SWITCH;
+        value = 1.0;
+        param[0] = 1.0e9;
+        param[1] = 0.0;
+      }
+      break;
+    case PART_IC:
+      if (strcmp(kn, "opamp") == 0 && nterm == 5) {
+        /* part_lib IN+,IN-,OUT,VCC,VEE → OUT, VEE, IN+, IN-, VCC (railed). */
+        kind = COMPILER_PHYS_OPAMP;
+        t[0] = terms[2];
+        t[1] = terms[4];
+        t[2] = terms[0];
+        t[3] = terms[1];
+        t[4] = terms[3];
+        value = value >= 10.0 ? value : DEF_OPAMP_GAIN;
+      } else if ((strcmp(kn, "ldo") == 0 || strcmp(kn, "regulator") == 0) &&
+                 nterm == 3) {
+        kind = COMPILER_PHYS_LDO; /* VIN, VOUT, GND; value = Vtarget */
+        param[0] = DEF_LDO_DROPOUT;
+        param[1] = DEF_LDO_ROUT;
+        param[2] = DEF_LDO_ILIMIT;
+        drives = terms[1];
+      }
+      break;
+    case PART_OTHER:
+      if (strcmp(kn, "battery") == 0 && nterm == 2) {
+        kind = COMPILER_PHYS_BATTERY; /* value = Voc */
+        param[0] = DEF_BATT_RINT;
+        drives = terms[0];
+      }
+      break;
+    default:
       break;
     }
-    case PART_TRANSISTOR:
-    case PART_IC:
-      diag_set_error(
-          "PHYSICS_UNSUPPORTED: '%s' has no Physics2 model yet (fail closed).",
-          c->role);
-      compiler_physics_design_free(out);
-      return false;
-    default:
-      diag_set_error(
-          "PHYSICS_UNSUPPORTED: component '%s' type cannot lower to Physics2.",
-          c->role);
+
+    if (kind == COMPILER_PHYS_NONE) {
+      diag_set_error("PHYSICS_UNSUPPORTED: '%s' (%s) has no Physics2 model "
+                     "(fail closed).",
+                     c->role, kn[0] ? kn : part_lib_type_label(c->part.type));
       compiler_physics_design_free(out);
       return false;
     }
 
-    if (nterm != 2) {
-      diag_set_error(
-          "PHYSICS_UNSUPPORTED: '%s' needs %u terminals; Phase 2 lowers "
-          "2-terminal devices only.",
-          c->role, (unsigned)nterm);
+    /* Per-part model parameters (IR parts[].model) override the defaults. */
+    {
+      static const struct {
+        CompilerPhysKind kind;
+        const char *key;
+        int slot; /* -1 value, -2 diode n, 0..2 param[] */
+      } map[] = {
+          {COMPILER_PHYS_DIODE, "is", -1},      {COMPILER_PHYS_DIODE, "n", -2},
+          {COMPILER_PHYS_BJT, "is", -1},        {COMPILER_PHYS_BJT, "alpha_f", 0},
+          {COMPILER_PHYS_BJT, "alpha_r", 1},    {COMPILER_PHYS_NMOS, "vth", -1},
+          {COMPILER_PHYS_NMOS, "k", 0},         {COMPILER_PHYS_NMOS, "lambda", 1},
+          {COMPILER_PHYS_PMOS, "vth", -1},      {COMPILER_PHYS_PMOS, "k", 0},
+          {COMPILER_PHYS_PMOS, "lambda", 1},    {COMPILER_PHYS_OPAMP, "gain", -1},
+          {COMPILER_PHYS_LDO, "dropout", 0},    {COMPILER_PHYS_LDO, "rout", 1},
+          {COMPILER_PHYS_LDO, "ilimit", 2},     {COMPILER_PHYS_BATTERY, "rint", 0},
+          {COMPILER_PHYS_SWITCH, "ron", -1},    {COMPILER_PHYS_SWITCH, "roff", 0},
+          {COMPILER_PHYS_SWITCH, "on", 1},
+      };
+      size_t mi;
+      double mv;
+      int diode_is = 0;
+      for (mi = 0; mi < sizeof(map) / sizeof(map[0]); mi++) {
+        if (map[mi].kind != kind || !part_model(schematic, c->part.mpn,
+                                                map[mi].key, &mv))
+          continue;
+        if (map[mi].slot == -1)
+          value = mv;
+        else if (map[mi].slot == -2)
+          diode_n = mv;
+        else
+          param[map[mi].slot] = mv;
+        if (kind == COMPILER_PHYS_DIODE && map[mi].slot == -1)
+          diode_is = 1;
+        model_from_part = 1;
+      }
+      /* Is given without n: the Vf-derived n=2 no longer applies. */
+      if (diode_is && !part_model(schematic, c->part.mpn, "n", &mv))
+        diode_n = 1.0;
+    }
+    if ((kind <= COMPILER_PHYS_DIODE || kind == COMPILER_PHYS_BATTERY ||
+         kind == COMPILER_PHYS_SWITCH) &&
+        nterm != 2) {
+      diag_set_error("PHYSICS_UNSUPPORTED: '%s' has %u pins; model needs 2.",
+                     c->role, (unsigned)nterm);
       compiler_physics_design_free(out);
       return false;
     }
 
-    if (!compiler_physics_design_add(out, kind, c->role, value, 0.0, terms,
+    if (!compiler_physics_design_add(out, kind, c->role, value, 0.0, t,
                                      nterm)) {
       diag_set_error("Failed to add '%s' to Physical IR.", c->role);
       compiler_physics_design_free(out);
       return false;
     }
-
-    if (kind == COMPILER_PHYS_DIODE) {
+    {
       CompilerPhysElement *el = &out->elements[out->count - 1];
-      el->diode_n = 1.0;
-      el->diode_vt = (1.380649e-23 * 300.0) / 1.602176634e-19;
+      el->diode_n = diode_n;
+      el->diode_vt = vt;
+      memcpy(el->param, param, sizeof(param));
+      el->model_from_part = model_from_part;
+    }
+    if (drives && driven_count < 8 && !net_in(driven, driven_count, drives))
+      strncpy(driven[driven_count++], drives, sizeof(driven[0]) - 1);
+  }
+
+  /* Rails: every net with a rail voltage that no device output drives. */
+  for (i = 0; i < schematic->component_count; i++) {
+    const CompiledComponent *c = &schematic->components[i];
+    int p;
+    for (p = 0; p < c->pin_count && p < 8; p++) {
+      const char *net = c->nodes[p];
+      if (!net[0] || compiler_schematic_rail(schematic, net, NULL) == RAIL_NONE ||
+          net_in(driven, driven_count, net) || net_in(rails, rail_count, net))
+        continue;
+      if (rail_count == 8) {
+        diag_set_error("TOPOLOGY_ERROR: more than 8 power rails.");
+        compiler_physics_design_free(out);
+        return false;
+      }
+      strncpy(rails[rail_count], net, sizeof(rails[0]) - 1);
+      rails[rail_count][sizeof(rails[0]) - 1] = '\0';
+      rail_count++;
     }
   }
 
-  if (has_pwr && has_gnd) {
+  if (rail_count == 0 && driven_count == 0) {
+    diag_set_error("TOPOLOGY_ERROR: no power rail net (e.g. 3V3, 5V, VIN) or "
+                   "battery; nothing drives the circuit.");
+    compiler_physics_design_free(out);
+    return false;
+  }
+
+  /* A rail is by definition a voltage relative to GND, so the source is
+   * stamped even when no part touches GND directly. */
+  for (i = 0; i < rail_count; i++) {
     const char *vs_terms[2];
-    vs_terms[0] = pwr_name;
+    char vs_name[64];
+    double v;
+    compiler_schematic_rail(schematic, rails[i], &v);
+    vs_terms[0] = rails[i];
     vs_terms[1] = "GND";
-    if (!compiler_physics_design_add(out, COMPILER_PHYS_VSOURCE, "VSRC",
-                                     supply_v, 0.0, vs_terms, 2)) {
-      diag_set_error("Failed to inject supply voltage source.");
+    snprintf(vs_name, sizeof(vs_name), "VSRC_%s", rails[i]);
+    if (!compiler_physics_design_add(out, COMPILER_PHYS_VSOURCE, vs_name, v,
+                                     0.0, vs_terms, 2)) {
+      diag_set_error("Failed to inject supply source for rail '%s'.",
+                     rails[i]);
       compiler_physics_design_free(out);
       return false;
     }
-  }
-
-  if (out->count == 0) {
-    diag_set_error("Physical IR empty after schematic lowering.");
-    compiler_physics_design_free(out);
-    return false;
   }
 
   return true;
@@ -1335,7 +1655,6 @@ static DBResult rebind_with_solved_stress(DB *db, CompiledSchematic *out) {
   PhysicsAccumulator *acc = NULL;
   PhysicsExecutionContext ctx;
   NodeId gnd;
-  double supply;
   int i;
   int has_passive = 0;
 
@@ -1351,19 +1670,12 @@ static DBResult rebind_with_solved_stress(DB *db, CompiledSchematic *out) {
   if (!has_passive)
     return DB_OK;
 
-  supply = infer_supply_v(NULL, 0, &out->components[0]);
-  if (supply <= 0.0) {
-    /* Fall back: scan all component nodes. */
-    for (i = 0; i < out->component_count && supply <= 0.0; i++)
-      supply = infer_supply_v(NULL, 0, &out->components[i]);
-  }
-  if (supply <= 0.0)
-    supply = 5.0;
-
   memset(&compiled, 0, sizeof(compiled));
   compiler_physics_design_init(&phys);
-  if (!compiler_schematic_to_phys_design(out, supply, &phys)) {
-    /* Unsupported devices (xstr/IC): skip rebind, keep first-pass bind. */
+  if (!compiler_schematic_to_phys_design(out, &phys)) {
+    /* Keep first-pass bind; verification re-runs lowering and fails closed. */
+    fprintf(stderr, "[BIND] solved-stress rebind skipped: %s\n",
+            diag_last_error());
     compiler_physics_design_free(&phys);
     return DB_OK;
   }
@@ -1389,11 +1701,12 @@ static DBResult rebind_with_solved_stress(DB *db, CompiledSchematic *out) {
   memset(&ctx, 0, sizeof(ctx));
   if (!physics2_context_init(&ctx, &compiled.program, acc, 0.0) ||
       !physics2_context_step(&ctx, gnd)) {
+    fprintf(stderr, "[BIND] solved-stress rebind skipped: DC solve failed (%s)\n",
+            ctx.newton.failure);
     physics2_context_free(&ctx);
     physics2_accumulator_free(acc);
     compiler_free_physics_program(&compiled);
     compiler_physics_design_free(&phys);
-    /* Solve failed — keep first-pass bind; verify will report. */
     return DB_OK;
   }
 

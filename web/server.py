@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Local chat UI backend for physics-synthesis-compiler.
-Loads GEMINI_API_KEY from environment or repo-root .env, runs synth generate.
+Runs synth generate on the prompt text (deterministic offline C NLP frontend).
 """
 
 from __future__ import annotations
@@ -37,10 +37,6 @@ DEFAULT_DFM = ROOT / "fixtures" / "dfm" / "standard.json"
 
 HOST = os.environ.get("SYNTH_WEB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SYNTH_WEB_PORT", "8765"))
-# Railway / Fly / Cloud Run inject PORT — listen on all interfaces.
-if os.environ.get("PORT"):
-    HOST = "0.0.0.0"
-    PORT = int(os.environ["PORT"])
 
 # Async generate jobs: web request must not be the lifetime of synth.
 _JOBS: dict[str, dict] = {}
@@ -59,24 +55,6 @@ def load_dotenv(path: Path) -> None:
         val = val.strip().strip('"').strip("'")
         if name and val and name not in os.environ:
             os.environ[name] = val
-
-
-def load_gemini_key_local(path: Path) -> None:
-    """Cursor often blocks opening .env; allow a plain local key file."""
-    if not path.is_file():
-        return
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" in line:
-            name, val = line.split("=", 1)
-            name = name.strip()
-            val = val.strip().strip('"').strip("'")
-            if name and val and name not in os.environ:
-                os.environ[name] = val
-        elif not os.environ.get("GEMINI_API_KEY") and not os.environ.get("SYNTH_LLM_API_KEY"):
-            os.environ["GEMINI_API_KEY"] = line
 
 
 def find_synth() -> Path:
@@ -272,16 +250,6 @@ def save_dfm_profile(raw: bytes) -> dict:
     return {"ok": True, **catalogue_status()}
 
 
-def _gemini_key() -> str:
-    return (os.environ.get("GEMINI_API_KEY") or os.environ.get("SYNTH_LLM_API_KEY") or "").strip()
-
-
-def _gemini_key_looks_valid(key: str | None = None) -> bool:
-    """Google AI Studio keys are typically AIza… (length varies; require prefix)."""
-    k = (key if key is not None else _gemini_key()).strip()
-    return k.startswith("AIza") and len(k) >= 20
-
-
 def run_generate(prompt: str) -> dict:
     ensure_user_data()
     synth = find_synth()
@@ -296,38 +264,12 @@ def run_generate(prompt: str) -> dict:
     env = os.environ.copy()
     env["SYNTH_FIXTURE_ROOT"] = str(ROOT)
 
-    key = _gemini_key()
-    has_key = bool(key)
     cmd = [str(synth), "generate", "--prompt-text", prompt, "-o", str(out_dir)]
     if CATALOGUE_DB.is_file():
         cmd.extend(["--catalogue", str(CATALOGUE_DB)])
     dfm = DFM_PROFILE if DFM_PROFILE.is_file() else DEFAULT_DFM
     if dfm.is_file():
         cmd.extend(["--dfm-profile", str(dfm)])
-    if not has_key:
-        return {
-            "ok": False,
-            "run_id": run_id,
-            "error": (
-                "GEMINI_API_KEY is not set. In Vercel, set GEMINI_API_KEY in "
-                "Project Settings → Environment Variables. Locally, put it in GEMINI_API_KEY.local."
-            ),
-            "live": False,
-        }
-    if not _gemini_key_looks_valid(key):
-        return {
-            "ok": False,
-            "run_id": run_id,
-            "live": False,
-            "error": (
-                "GEMINI_API_KEY does not look like a Google AI Studio key "
-                "(expected to start with AIza). Get a key at "
-                "https://aistudio.google.com/apikey and put it in "
-                "GEMINI_API_KEY / GEMINI_API_KEY.local (Vercel: Project -> "
-                "Environment Variables). A wrong key used to burn the 50s "
-                "Vercel generate timeout instead of failing fast."
-            ),
-        }
 
     timeout_sec = 50 if os.environ.get("VERCEL") else 300
     try:
@@ -340,21 +282,13 @@ def run_generate(prompt: str) -> dict:
             timeout=timeout_sec,
         )
     except subprocess.TimeoutExpired:
-        hint = ""
-        if os.environ.get("VERCEL"):
-            hint = (
-                " On Vercel the generate subprocess limit is 50s. "
-                "Check GEMINI_API_KEY is a valid AIza… key and that Gemini "
-                "is reachable; invalid keys / long retries used to hit this."
-            )
         return {
             "ok": False,
             "run_id": run_id,
-            "error": f"generate timed out after {timeout_sec}s.{hint}",
-            "live": True,
+            "error": f"generate timed out after {timeout_sec}s.",
         }
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "run_id": run_id, "error": str(exc), "live": True}
+        return {"ok": False, "run_id": run_id, "error": str(exc)}
 
     artifacts = {}
     artifact_contents = {}
@@ -390,7 +324,6 @@ def run_generate(prompt: str) -> dict:
     return {
         "ok": ok,
         "run_id": run_id,
-        "live": True,
         "summary": summary,
         "verification_summary": summary,
         "artifacts": artifacts,
@@ -487,7 +420,6 @@ class Handler(SimpleHTTPRequestHandler):
         if resolved in ("/api/health", "/health") or (
             resolved in ("/api/index.py", "/api") and "health" in self.path
         ):
-            has_key = bool(_gemini_key())
             try:
                 synth_path = str(find_synth())
             except Exception:
@@ -496,8 +428,7 @@ class Handler(SimpleHTTPRequestHandler):
                 200,
                 {
                     "status": "ok",
-                    "has_key": has_key,
-                    "key_looks_valid": _gemini_key_looks_valid() if has_key else False,
+                    "frontend": "nlp",
                     "synth": synth_path,
                     "catalogue": catalogue_status(),
                 },
@@ -631,7 +562,6 @@ class Handler(SimpleHTTPRequestHandler):
 
 def main() -> None:
     load_dotenv(ROOT / ".env")
-    load_gemini_key_local(ROOT / "GEMINI_API_KEY.local")
     RUNS.mkdir(parents=True, exist_ok=True)
     STATIC.mkdir(parents=True, exist_ok=True)
     try:
@@ -639,7 +569,6 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"catalogue seed warning: {exc}", file=sys.stderr)
 
-    has_key = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("SYNTH_LLM_API_KEY"))
     try:
         synth = find_synth()
     except FileNotFoundError as exc:
@@ -652,7 +581,7 @@ def main() -> None:
     print(f"Physics Synthesis chat UI")
     print(f"  open:  {url}")
     print(f"  synth: {synth}")
-    print(f"  gemini key: {'yes' if has_key else 'NO — add to .env'}")
+    print("  frontend: offline C NLP")
     print(f"  catalogue parts: {cat.get('parts')} ({cat.get('dfm_name')} DFM)")
     print(f"  runs:  {RUNS}")
     try:

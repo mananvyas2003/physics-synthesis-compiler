@@ -111,17 +111,21 @@ typedef struct {
 
 /*
  * Behavioral op-amp: V(out+)-V(out-) = A * (V(in+)-V(in-)).
- * Terminals [0]=out+, [1]=out-, [2]=in+, [3]=in- (same as VCVS).
- * Finite A; no rails in v1 (ponytail: add rail clamp when saturation tests need it).
+ * Terminals [0]=out+, [1]=out-(VEE), [2]=in+, [3]=in- (same as VCVS).
+ * railed: [4]=VCC; output clamps to [V(VEE), V(VCC)] (hard, piecewise).
+ * Output current returns through out- in both modes (supply-current split
+ * between VCC/VEE is not modelled).
  */
 typedef struct {
   double gain;
+  int railed;
 } PhysicsOpAmp;
 
 /*
  * behavioral_lumped_ldo (not silicon):
  *   Vset = min(Vtarget, Vin_gnd - Vdropout); Vout via Rout Thevenin to GND.
- * Terminals [0]=VIN, [1]=VOUT, [2]=GND. No input current. ilimit<=0 disables.
+ * Terminals [0]=VIN, [1]=VOUT, [2]=GND. Output current is drawn from VIN
+ * (I_in = I_out; quiescent current not modelled). ilimit<=0 disables.
  */
 typedef struct {
   double vtarget;
@@ -274,6 +278,10 @@ bool physics2_primitive_init_switch(PhysicsPrimitive *primitive, const char *nam
 bool physics2_primitive_init_opamp(PhysicsPrimitive *primitive, const char *name,
                                    double gain);
 
+/* Same, with a 5th terminal VCC and output clamped to [VEE, VCC]. */
+bool physics2_primitive_init_opamp_railed(PhysicsPrimitive *primitive,
+                                          const char *name, double gain);
+
 bool physics2_primitive_init_ldo(PhysicsPrimitive *primitive, const char *name,
                                  double vtarget, double vdropout, double rout,
                                  double ilimit);
@@ -388,7 +396,7 @@ typedef enum {
 typedef struct {
   Physics2NewtonStatus status;
   size_t iterations;
-  double residual_norm; /* ∞-norm of last Newton update (proxy for ||F||) */
+  double residual_norm; /* ||A(x)x - b(x)||inf at acceptance (true ||F||) */
   double update_norm;   /* same as residual_norm at accept; last raw step */
   double damping;       /* last accepted α in (0,1] */
   char failure[80];

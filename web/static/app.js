@@ -14,7 +14,7 @@ function ensureEmpty() {
     empty.className = "empty";
     empty.id = "empty";
     empty.innerHTML =
-      "<h1>Describe a circuit.</h1><p>Gemini drafts schematic IR; your compiler binds, verifies, and emits KiCad.</p>";
+      "<h1>Describe a circuit.</h1><p>The offline NLP frontend drafts schematic IR; the compiler binds, verifies, and emits KiCad.</p>";
     chat.appendChild(empty);
   }
 }
@@ -196,7 +196,7 @@ form.addEventListener("submit", async (e) => {
 
     setStatus(`Job ${enq.job_id.slice(0, 8)}…`);
     thinking.querySelector(".text").textContent =
-      "Calling Gemini → bind → verify → emit…";
+      "NLP → bind → verify → emit…";
     const data = await pollGenerateJob(enq.job_id, (st) => {
       setStatus(`Job ${st}…`);
       thinking.querySelector(".text").textContent = `Status: ${st}`;

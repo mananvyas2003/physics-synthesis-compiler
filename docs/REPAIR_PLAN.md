@@ -1,222 +1,125 @@
 # Repair Plan — Physics Synthesis Compiler
 
-**Date:** 2026-09-22  
-**Rule:** File/function-level. No claimed support without tests.  
-**User local change noted:** `compiler.c` KiCad multi-pin / symbol_prefix split (keep; incomplete for pin_count≠2 library symbols).
+**Reconciled:** 2026-09-23 against the working tree (not against earlier claims).
+**Rule:** a row says "done" only if a golden in `tests/golden_cases.c` proves it.
+**Companion:** [IMPLEMENTATION_GAP.md](IMPLEMENTATION_GAP.md) (claimed vs actual).
 
 ---
 
-## 0. Actual generate call graph (traced 2026-09-22, post Phase 2)
+## 0. Scope decisions (owner, 2026-09-23)
+
+| Decision | Effect |
+|----------|--------|
+| Gemini removed | Prompt text always goes through the offline C NLP (`nlp/nlp.c`). |
+| PCB backend removed | `synth generate` emits no `.kicad_pcb`. |
+| Compiler-level controlled sources removed | Physics2 interpreter primitives (g32–g35) remain. |
+| Docker / Railway removed | owner change. |
+
+---
+
+## 1. Actual generate call graph
 
 ```
-main → cmd_generate
-  ├─ schematic_provider_from_prompt / --spec / --compose / design.json
-  │     offline: offline_from_prompt → fixtures/schematics/NNN.json  (NOT NLP)
-  │     live:    gemini_schematic_from_prompt
-  ├─ seed_load_topology_json_ex  (SQLite Topology* + optional IR parts[])
-  ├─ compiler_compile_from_design
-  │     bind_score_passive(..., applied_v=5.0, ...)   ← still Phase 5 debt
-  │     → CompiledSchematic  (KiCad + BOM)
-  ├─ verify_bound_schematic
-  │     LED-only (no C/L) → analytical
-  │     transistor/IC → fail-closed
-  │     else: schematic → PhysDesign → lower → Physics2 DC (R/C/L/diode+Vsrc)
-  ├─ mfg_dfm_check_schematic → vendor_bridge → vendor_next dfm (~3 rules)
-  └─ emit net / bom / kicad_sch / snapshot
+main → cmd_generate (cli/cmd_generate.c)
+  ├─ --prompt / --prompt-text → nlp_text_to_schematic_ir (nlp/nlp.c)
+  │     patterns + closed-form value synthesis → schematic-ir.v1 (+ measure,
+  │     provenance, unmodeled). --offline-prompt → corpus fixture map only.
+  ├─ --spec / --compose / design.json
+  └─ cmd_generate_design
+       ├─ schematic_ir_validate_file (rails / measure / power source checked)
+       ├─ seed_load_topology_json_ex → SQLite work DB in out_dir/.gen
+       ├─ compiler_compile_from_design (compiler.c)
+       │     IR part_type → CompiledComponent.kind; IR rails / measure / model /
+       │     transient → schematic
+       │     bind_score_passive (first pass) → rebind_with_solved_stress (logged)
+       ├─ verify_bound_schematic (verify/verify_report.c)  — Physics2 only
+       │     compiler_schematic_to_phys_design: R C L D BJT NMOS/PMOS switch
+       │       connector op-amp LDO battery + one ideal source per rail
+       │     → Newton (residual-gated + ‖F‖∞ line search) → measure
+       │     → ratings → R DC corners → AC (linearized at OP) + R/C/L AC corners
+       │     → IR transient (power-on BE) → power balance
+       ├─ mfg_dfm_check_schematic → vendor_bridge (real model kinds) → 8 rules
+       ├─ emit net/BOM/sch/snap/erc into .gen; rename into out_dir on success
+       └─ build-manifest.v1.json: stage, [DB], [BIND], [DFM]; failure drops emit
 ```
 
-**Not on generate path:** vendor `mna_solve`, `part_provider`, `e_series`, SQLite `FabRules`.  
-**On generate path now:** `compiler_schematic_to_phys_design`, `compiler_lower_to_physics2`.
+Not on the generate path: vendor `mna_solve` (oracle).
 
 ---
 
-## 1. Bug map (exact locations)
+## 2. Bug map (super-prompt §71.4)
 
-### 1.1 903 capacitors disappear — **FIXED (Phase 2)**
-
-Was: `verify_report.c` `continue` omitting C.  
-Now: every bound R/C/L/diode enters PhysDesign; integrity check fails on instruction_count loss; DC C stamp returns success (open).  
-**Still needed:** dedicated 903 golden (Phase 3).
-
-### 1.2 SENSOR_VDD reported as supply — **PARTIAL**
-
-Was: `is_sense` ∈ {VOUT, 3V3}.  
-Now: looks up `SENSOR_VDD` / `ADC_SENSE` / `VOUT` by name; still falls back to VIN if none; JSON key still `"vout"`.  
-**Phase 4:** fail if requested node missing; never silent VIN.
-
-### 1.3 Hardcoded rating / bias voltage — **OPEN (Phase 5)**
-
-| Site | Code |
-|------|------|
-| `compiler.c` ~228 | `double applied_v = 5.0;` fed to `bind_score_passive` + bind-time dissip |
-| `verify_report.c` | DC ratings use solved ΔV (good); bind path still fake |
-| LED analytical | `vf` fallback 2.0 when catalogue Vf missing |
-
-### 1.4 Transistor / IC “auto-pass”
-
-**fail-closed** with `analysis=unsupported`. Do not reintroduce structural pass.
-
-### 1.5 Physics2 lowering bypassed — **FIXED (Phase 2)**
-
-Verify builds PhysDesign → `compiler_lower_to_physics2`. No second ad-hoc stamp loop.
-
-### 1.6 Offline “NLP” is fixture lookup — **FIXED (Phase 19)**
-
-Deterministic C NLP in `nlp/nlp.c`; `synth parse --prompt-text`. Fixture map only with `--offline-prompt`.
-
-### 1.7 Silent pin-contract fallback — **OPEN (Phase 4)**
-
-`compiler.c` still invents `"1","2"` when no pin contract.
-
-### 1.8 User `compiler.c` KiCad edits (local, keep)
-
-- Separates `ref_prefix` vs `symbol_prefix` — correct
-- Multi-pin grid emit from `pins[]`/`nodes[]` — good
-- `write_twoterm_library_symbol` still **returns early if pin_count ≠ 2** → Q/LDO/OpAmp lack `lib_symbols` — Phase 17
+| Symptom | Status | Proof |
+|---------|--------|-------|
+| 903 capacitors dropped | fixed; verify fails on `PHYSICS_COMPONENT_LOSS` | g26 |
+| SENSOR_VDD reported as supply | fixed | g26 |
+| Measurement picked by name list | IR `measure` drives it (`measure_source: spec`); name list only as labelled fallback | g82 |
+| Hardcoded 5 V stress | gone; IR `rails` overrides names; VIN/VCC/VBUS default 5 V labelled `defaulted` | g81, g82 |
+| Transistor / IC auto-pass | replaced by real lowering (BJT, NMOS/PMOS, op-amp, LDO, battery, switch, connector); others fail closed | g21, g82 |
+| LED analytical bypass | deleted; LED through Physics2 | g17, g26, g82 |
+| Offline NLP = fixture lookup | real patterns + synthesis; every emitted IR must verify | g77, g83 |
 
 ---
 
-## 2. Source-of-truth layers (target)
+## 3. Done (each with a test)
 
-| Layer | Owner (target) | Today |
-|-------|----------------|-------|
-| Spec IR | NLP / Gemini / offline parse | schematic-ir / SpecV1 |
-| Topology IR | typed graph | SQLite Topology* + IR JSON |
-| Physical IR | bound device + model params | `CompiledSchematic` (MPN mixed in) |
-| Physics2 | executable equations | partial; verify bypass |
-| Numerical | Physics2 runtime | Physics2 (+ vendor oracle) |
-| Verification | node/quantity measurements | `verify_report` heuristics |
-| Manufacturing | DFM rule engine | 3 vendor rules |
-| Output | KiCad/BOM serializers | emit / `compiler_write_kicad_sch` |
-
-Invariant: same Physical IR → sim / BOM / sch / PCB.
-
----
-
-## 3. Phase plan (files / functions)
-
-### PHASE 1 — Docs vs code (this file + audits)
-
-| Deliverable | Action |
-|-------------|--------|
-| `docs/REPAIR_PLAN.md` | This document |
-| `docs/architecture/ARCHITECTURE_AUDIT.md` | Patch §2/§4 for fail-closed IC, capacitor drop site |
-| `docs/math/MNA_CONTRACT.md` | Note verify omits C; lowering unused |
-| `docs/IMPLEMENTATION_GAP.md` | Short gap table (Phase 1 artifact) |
-
-No product-feature code in Phase 1.
-
-### PHASE 2 — Physical IR → Physics2 authoritative
-
-| Change | File / symbol |
-|--------|----------------|
-| Add `COMPILER_PHYS_DIODE` (+ optional later kinds) | `compiler.h` |
-| `compiler_schematic_to_phys_design(CompiledSchematic*, CompilerPhysDesign*, …)` | `compiler.c` — map every bindable R/C/L/diode; inject ideal V from power net; **fail closed** on unsupported |
-| Extend element params for diode Is/n/Vt | `CompilerPhysElement` or side params |
-| DC open capacitor: stamp no-op **success** when `timestep==0` (or `dc` flag) | `physics2_interpreter.c` `capacitor_stamp` |
-| Allow DC context init (`timestep==0`) | `physics2_context_init` |
-| DC inductor: short (ideal V=0 branch preferred; temporary large-G only if documented `ponytail:`) | `inductor_stamp` |
-| Verify: build PhysDesign → `compiler_lower_to_physics2` → step → measure | `verify/verify_report.c` |
-| Delete silent `continue` for unknown types | same — fail closed |
-| Keep analytical LED/RC/RL as **oracle tests only**, not generate path | move or gate |
-| Golden: lowering preserves C/L opcodes in instruction stream | `tests/golden_*` |
-
-**Exit criteria:** generate/verify Physics2 `instruction_count` ≥ bound passive+diode count (+ Vsrc); no device dropped without `PHYSICS_UNSUPPORTED`.
-
-### PHASE 3 — Component-loss regression (903)
-
-| Artifact | Content |
-|----------|---------|
-| Fixture | `fixtures/schematics/903.json` (or seed) sensor rail + LED |
-| Golden | IR ⊇ C1,C2; bound ⊇ C1,C2; PhysDesign ⊇ C; Physics2 opcodes ⊇ CAPACITOR; DC C open; V(SENSOR_VDD)≈3.0 |
-| Structured log | `test-run.v1.json` sections INPUT/DB/TOPOLOGY/PHYSICS/MNA/MEASUREMENTS/DFM |
-
-Depends on Phase 2 + Phase 4 measurement name fix.
-
-### PHASE 4 — Node-aware measurement + topology fail-closed
-
-- Measurement API: `node` + `quantity` → `solution[node_id]`
-- Expand / replace `is_sense`; never fall back to VIN silently when a named net exists
-- Remove `req_pins` silent `"1","2"` fallback
-- Multi-pin nodes already partially on `CompiledComponent.nodes[]`
-
-### PHASE 5 — Remove hardcoded rating voltage
-
-- Bind after coarse estimate or two-pass: bind → solve → re-check ratings with solved V/I/P
-- Delete `applied_v = 5.0` as universal stress
-
-### PHASES 6–14 — Device / Newton / AC / transient
-
-Per super-prompt §8–28. Physics2 remains sole live runtime; vendor MNA = oracle.  
-Do not advance while Phase 2–3 invariants fail.
-
-### PHASES 15–18 — Binding loop, DFM rules, KiCad round-trip, PCB
-
-- Finish multi-pin KiCad symbols (user WIP)
-- Topology fingerprint round-trip
-- PCB nets = schematic nets
-
-### PHASES 19–21 — Offline C NLP, optional ONNX, Gemini live/replay
-
-- Real `synth parse --prompt-text`
-- Fixture map remains corpus only, not default NLP
-
-### PHASE 22 — Industrial macros
-
-**DONE** — `fixtures/macros/catalog.json`, new blocks, `--compose <scenario>`, g80, `docs/MACROS.md`.
+| Item | Files | Test |
+|------|-------|------|
+| Build after partial revert; Gemini removed | many | full build |
+| Rail sources per rail, fail closed without supply | compiler.c | g81 |
+| Exact junction law (diode/BJT), LED Is from Vf @ 20 mA | physics2_interpreter.c, compiler.c | g26 LED 1.919 V |
+| LED+R through Physics2 (analytical path deleted) | verify_report.c | g17 |
+| IR `measure {node,min,max}` + limit violations | compiler.c, schematic_load.c, verify_report.c | g82 `measure_limit_rejects` |
+| IR `rails {"VIN": 12}` | same | g82 `ir_rails_measure_ok` |
+| Lowering: BJT (Ebers-Moll), NMOS (Level-1), op-amp (finite gain), LDO (behavioral), battery (Thevenin) | compiler.c | g82 bisection oracles, g21 |
+| LDO current-limit Jacobian regularized (was singular unloaded) | physics2_interpreter.c | g21 |
+| AC fails closed for devices without a small-signal stamp (was: silently open) | physics2_interpreter.c | — |
+| Newton accepts only when ‖A(x)x−b(x)‖∞ ≤ abs + rel·scale | physics2_interpreter.c | g82 residual < 1e-9 |
+| Ratings: current + power for R/D/L/battery; voltage across every pin pair | verify_report.c | g82, g83 prompt 4 |
+| Resistor tolerance corners, exhaustive to 2^10, per-corner values reported | verify_report.c | g82 closed-form corners |
+| AC transfer on generate (linear + linearized nonlinear, single rail), 10 Hz–1 MHz | verify_report.c | g82, g83 prompt 5 |
+| AC R/C/L corners, exhaustive to 2^10 | verify_report.c | g82 |
+| Transient on generate when IR has `transient` | verify_report.c | g82 |
+| IR `parts[].model` overrides `DEF_*` | compiler.c | g82 `model_override_ok` |
+| 2-pin connector = 1 GΩ open; 3-pin fail closed | compiler.c | g82 `connector_ok` |
+| LDO I_in = I_out (stamp + ratings); op-amp I_out + rail dissipation | verify_report.c | g82, g21 |
+| Residual line search on ‖F‖∞ (α = 1 … 1/64) | physics2_interpreter.c | g82 `newton.damping` |
+| Emit to `.gen`, rename on success, drop on fail | cmd_generate.c | g82 `generate_transactional_ok` |
+| Power balance report | verify_report.c | g82 (~1e-17 W) |
+| DFM bridge used a resistor model for every non-R/C/D part; ≤3 pins | vendor_bridge.c | g83 prompt 6 (battery) |
+| Seed rejected valid `battery` parts | seed/seed_topology.c | g77 p08 |
+| NLP value synthesis: divider ratio, RC cutoff, LED current, load R + package, LDO, I2C pull-ups, battery reverse polarity, decoupling | nlp/nlp.c | g83 |
+| NLP corpus: every emitted IR must validate, bind and verify | tests | g77 (14 verify / 16 refuse, per-prompt) |
+| Structured test log | tests/golden_runner.c | `audit_build/test-run.v1.json` |
+| Generate telemetry: DB, bindings, DFM, stage | cmd_generate.c | manifest |
+| Failure drops emitted design files (staging + published) | cmd_generate.c | g82 |
 
 ---
 
-## 4. PHASE 1 / 2 immediate work order
+## 4. Open work (honest ceilings)
 
-1. ~~Write this plan + `IMPLEMENTATION_GAP.md`~~ **DONE**
-2. ~~Patch audit/contract docs to match code~~ **DONE** (reconciled again after user KiCad WIP)
-3. ~~Implement PhysDesign from schematic + DC-open C + verify via lower~~ **DONE**
-4. ~~Build + run existing goldens~~ **DONE** (`golden_runner failures=0`; g18 shows C in Physics2 stream)
-5. ~~Delete dead `verify_rc_analytical`~~ **DONE** (was unused after Phase 2)
-6. **Stop** — next was Phase 3–5; status below.
+1. **Catalogue has no model columns** — per-part params come from IR `parts[].model`; `DEF_*` remain the fallback.
+2. **Op-amp stamp** still returns output current through VEE; ratings split VCC/VEE, power balance stays off for op-amps.
+3. **AC / transient** need an IR measure node (and `transient` for BE). No arbitrary stimulus sources.
+4. **CMake** is not installed on this machine (`where cmake` empty). Goldens: gcc -O2, 79/79.
 
-### Phase 3–5 status (2026-09-22)
-
-| Phase | Status |
-|-------|--------|
-| 3 — 903 golden | **DONE** — `g26_903_sensor_power`, fixture `fixtures/seed/sensor_903.json` |
-| 4 — named measure + pin fail-closed | **DONE** — no VIN fallback; `measured_node`/`measured_v`; silent `1`/`2` pins removed |
-| 5 — `applied_v=5.0` | **DONE** — `infer_supply_v` from topology nets; 0 → skip fake derating |
-| 6 — R/C/L/V/I | **DONE** — L branch DC short+BE; g27–g30 isource/C-open/L-short/RL-BE |
-| 7 — controlled sources | **DONE** — g32–g35 hand oracles; g36 PhysDesign lower; node-before-branch fix |
-| 8 — global Newton | **DONE** — report/damping/limits; g37–g40 |
-| 9 — diode | **DONE** — junction soft-limit; reverse/C-BE/KCL; g38 harsh V=10; g41–g43 |
-| 10 — BJT | **DONE** — Ebers-Moll stamp+Jacobian; Newton; g44–g47 cutoff/active/sat/KCL |
-| 11 — MOSFET | **DONE** — Level-1 Shichman-Hodges NMOS/PMOS; Newton; g48–g51 cutoff/linear/sat/KCL |
-| 12 — switch/opamp/LDO/battery | **DONE** — Ron/Roff; behavioral op-amp VCVS; lumped LDO; Thevenin battery; g52–g59 |
-| 13 — true AC | **DONE** — opaque paired re/im MNA; R/C/L/V/I (+); g60–g63 RC/RL/divider |
-| 14 — robust transient | **DONE** — BE transactional snapshot/restore; `run_steps`; g64–g68 RC/RL/RLC/diode/reject |
-| 15 — two-pass bind | **DONE** — `rebind_with_solved_stress` after compile |
-| 16 — DFM | **DONE** — 8 rules; honest `rules_checked`/`profile_fields_used`; g69–g71; `docs/DFM.md` |
-| 17 — multi-pin KiCad | **DONE** — `write_library_symbol` + g31 |
-| 18 — PCB | **DONE** — phase-one `emit_kicad_pcb` (place/outline/nets); g72; `docs/PCB.md` |
-| 19 — offline NLP | **DONE** — C lexer+patterns; `synth parse`; corpus `--offline-prompt` only; g73–g75; `docs/NLP.md` |
-| 20 — optional ONNX | **DONE** — `nlp_runtime` stub fail-closed; `--neural`; 30 free-form prompts g76–g77; no fake BiLSTM |
-| 21 — Gemini live/replay | **DONE** — `SYNTH_GEMINI_REPLAY` cassette; g78 replay; g79 live=unavailable gate; `docs/GEMINI.md` |
-| 22 — industrial macros | **DONE** — catalog+blocks; `industrial_sensor`/`power_tree_12v`; g80; `docs/MACROS.md` |
-
-User local KiCad multi-pin / `symbol_prefix` split: **kept** and completed for Q/LDO/OpAmp.
-
+Closed this pass: IR model override; 2-pin connector; LDO I_in; op-amp rail ratings; AC linearization + R/C/L AC corners; IR transient; residual line search; `.gen` publish.
 
 ---
 
-## 5. Explicit non-goals for Phase 1–2
+## 5. NLP frontend — measured
 
-- PCB backend  
-- BiLSTM/ONNX  
-- Gemini suite expansion  
-- Fake BJT/MOS  
-- Claiming AC/complex MNA  
-- Special-case “if 903 then …”
+`synth generate --prompt-text`, super-prompt §62 (g83):
 
----
+| Prompt | Result |
+|--------|--------|
+| 3.3V rail 250mA, 100nF + 10uF decoupling | 2 caps on 3V3 in Physics2; 250 mA recorded as `unmodeled` |
+| ADC divider 5V → roughly 1V | R1 = E24(40k) = 39k, V(ADC_SENSE) = 1.0204 V, limits ±5 % |
+| 4.7k pull-up for I2C at 3.3V | R_SDA, R_SCL to 3V3 |
+| MOSFET switch 12V load from 3.3V | load 120 Ω (100 mA defaulted), 0805 at 2.4 W, V(DRAIN) matches triode KCL |
+| Low-pass around 1 kHz | C = E24(15.9 nF) = 16 nF, |H(1 kHz)| = 0.705 |
+| Battery input with reverse-polarity protection | 3.7 V defaulted, Schottky, V(VSYS) = 3.7 V |
+| LED indicator from the regulated rail | refused: rail voltage not stated |
+| 12 V to 5 V regulator | LDO, V(5V) = 5.0 V |
 
-## 6. Definition of done (architecture) — tracked
-
-See super-prompt §70. Phase 2 closes items **1** (partial: no silent drop on R/C/L/diode path) and **2** (Physical IR drives sim). Items **3–4** need Phases 4–5.
+Corpus `fixtures/nlp_freeform/p01–p30` (g77): 14 verify end to end, 16 refused with a clarifying question, 0 emitted-but-invalid.

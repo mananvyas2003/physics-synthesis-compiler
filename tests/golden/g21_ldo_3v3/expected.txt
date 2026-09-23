@@ -1,3 +1,4 @@
 g21_ldo_3v3
 components=2
-passed=0
+passed=1
+vout_3v3_ok=1

@@ -18,11 +18,15 @@ typedef struct {
   int physics2_caps;
   int physics2_inds;
   int physics2_instr;
+  /* Resistor tolerance corners on the measured node (count 0 → not run). */
+  double corner_min, corner_max;
+  int corner_count;
 } VerifyResult;
 
 /*
- * DC solve on a bound schematic (resistor divider path) and assert
- * voltages against part ratings. Emits verification.v1.json.
+ * Physics2 DC operating point on the bound schematic, solved-stress ratings,
+ * spec measurement + limits, tolerance corners, AC for linear networks.
+ * Emits verification.v1.json. Returns 0 only when everything passes.
  */
 int verify_bound_schematic(const CompiledSchematic *schematic,
                            const char *report_path, VerifyResult *out);

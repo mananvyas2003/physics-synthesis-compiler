@@ -559,7 +559,38 @@ static bool ac_stamp_admittance(PhysicsAcSystem *sys, NodeId a, NodeId b,
          physics2_ac_add(sys, b, b, g_re, g_im);
 }
 
+/* Small-signal stamp: the device's DC stamp at the operating point is its
+ * Jacobian J(x0); copy the matrix part (bias RHS dropped) into the AC system. */
+static bool ac_stamp_jacobian(PhysicsAcSystem *sys,
+                              const PhysicsExecutionContext *context,
+                              PhysicsAccumulator *scratch,
+                              const PhysicsPrimitive *p,
+                              const PhysicsInstruction *ins) {
+  PhysicsExecutionContext op;
+  size_t r, c, n;
+  if (!context || !scratch || !p->ops || !p->ops->stamp)
+    return false;
+  physics2_accumulator_clear(scratch);
+  op = *context;
+  op.accumulator = scratch;
+  op.timestep = 0.0;
+  if (!p->ops->stamp(p, &op, ins->terminals, ins->terminal_count, ins->branch))
+    return false;
+  n = physics2_accumulator_size(scratch);
+  for (r = 0; r < n; r++)
+    for (c = 0; c < n; c++) {
+      double v = physics2_accumulator_get(scratch, r, c);
+      if (v == 0.0 || !isfinite(v))
+        continue;
+      if (!physics2_ac_add(sys, r, c, v, 0.0))
+        return false;
+    }
+  return true;
+}
+
 static bool ac_stamp_instruction(PhysicsAcSystem *sys,
+                                 const PhysicsExecutionContext *context,
+                                 PhysicsAccumulator *scratch,
                                  const PhysicsProgram *program,
                                  const PhysicsInstruction *ins, double omega) {
   PhysicsPrimitive *p;
@@ -638,7 +669,10 @@ static bool ac_stamp_instruction(PhysicsAcSystem *sys,
            physics2_ac_add_rhs(sys, t1, val, 0.0);
   case PHYS_PRIM_VCVS:
   case PHYS_PRIM_OPAMP: {
-    double mu = (p->kind == PHYS_PRIM_OPAMP)
+    double mu;
+    if (p->kind == PHYS_PRIM_OPAMP && p->payload.opamp.railed)
+      return ac_stamp_jacobian(sys, context, scratch, p, ins);
+    mu = (p->kind == PHYS_PRIM_OPAMP)
                     ? p->payload.opamp.gain
                     : p->payload.controlled_source.gain.nominal;
     if (br == PHYSICS2_BRANCH_NONE || !isfinite(mu))
@@ -662,8 +696,8 @@ static bool ac_stamp_instruction(PhysicsAcSystem *sys,
            physics2_ac_add(sys, t1, t3, gm, 0.0);
   }
   default:
-    /* Diode/BJT/MOS/LDO: not in linear AC (need small-signal J). Skip open. */
-    return true;
+    /* Diode/BJT/MOS/LDO/CCxS: linearized at the DC operating point. */
+    return ac_stamp_jacobian(sys, context, scratch, p, ins);
   }
 }
 
@@ -671,6 +705,7 @@ bool physics2_context_step_ac(const PhysicsExecutionContext *context,
                               NodeId reference_node, double omega_rad,
                               double *x_re, double *x_im) {
   PhysicsAcSystem *sys = NULL;
+  PhysicsAccumulator *scratch = NULL;
   size_t i;
   int ok = 0;
 
@@ -682,11 +717,12 @@ bool physics2_context_step_ac(const PhysicsExecutionContext *context,
     return false;
 
   sys = physics2_ac_create(context->solution_size);
-  if (!sys)
-    return false;
+  scratch = physics2_accumulator_create(context->solution_size);
+  if (!sys || !scratch)
+    goto done;
 
   for (i = 0; i < context->program->instruction_count; i++) {
-    if (!ac_stamp_instruction(sys, context->program,
+    if (!ac_stamp_instruction(sys, context, scratch, context->program,
                               &context->program->instructions[i], omega_rad))
       goto done;
   }
@@ -695,6 +731,7 @@ bool physics2_context_step_ac(const PhysicsExecutionContext *context,
     goto done;
   ok = 1;
 done:
+  physics2_accumulator_free(scratch);
   physics2_ac_free(sys);
   return ok != 0;
 }
@@ -1490,32 +1527,34 @@ static const PhysicsPrimitiveOps cccs_ops = {
  *   Ieq = I - Gd * Vd_lim
  *   stamp Gd like R; RHS ± Ieq
  *
- * Domain: exponent clamped to ±40. Junction soft-limit above
- * Vcrit = n·Vt·log(1e10) so Newton can leave Vd ≫ 1 without overflow.
+ * Domain: the law is exact for Vd/(n·Vt) <= JUNCTION_XMAX (80, i.e. Is·5e34
+ * A: beyond any physical current) and continued linearly (C1) above it, so
+ * exp never overflows. The model is never distorted inside the physical
+ * range; convergence comes from the runtime's per-step voltage limit.
  * ========================================================= */
 
-static double diode_vlim(double vd, double n, double vt) {
-  /* Soft critical voltage (~0.6 V for n=1, Vt≈26 mV). */
-  double vcrit = n * vt * log(1.0e10);
-  if (vd > vcrit)
-    return vcrit + log(1.0 + (vd - vcrit)); /* ponytail: soft limit; homotopy later */
-  return vd;
+#define JUNCTION_XMAX 80.0
+
+/* e^x (exact for x <= XMAX, C1 linear above) and its derivative. */
+static void junction_exp(double x, double *e, double *de) {
+  if (x > JUNCTION_XMAX) {
+    double emax = exp(JUNCTION_XMAX);
+    *e = emax * (1.0 + (x - JUNCTION_XMAX));
+    *de = emax;
+  } else {
+    *e = exp(x);
+    *de = *e;
+  }
 }
 
 static void diode_shockley(double isat, double n, double vt, double vd,
                            double *current_a, double *conductance_s) {
-  double exponent;
-  double exp_value;
+  double e;
+  double de;
 
-  exponent = vd / (n * vt);
-  if (exponent > 40.0)
-    exponent = 40.0;
-  if (exponent < -40.0)
-    exponent = -40.0;
-
-  exp_value = exp(exponent);
-  *current_a = isat * (exp_value - 1.0);
-  *conductance_s = isat * exp_value / (n * vt);
+  junction_exp(vd / (n * vt), &e, &de);
+  *current_a = isat * (e - 1.0);
+  *conductance_s = isat * de / (n * vt);
 }
 
 static bool diode_stamp(const PhysicsPrimitive *primitive,
@@ -1527,7 +1566,6 @@ static bool diode_stamp(const PhysicsPrimitive *primitive,
   double va;
   double vc;
   double vd;
-  double vd_lim;
   double current;
   double gd;
   double ieq;
@@ -1559,10 +1597,9 @@ static bool diode_stamp(const PhysicsPrimitive *primitive,
   }
 
   vd = va - vc;
-  vd_lim = diode_vlim(vd, n, vt);
-  diode_shockley(isat, n, vt, vd_lim, &current, &gd);
-  /* Companion about Vd_lim: I ≈ Gd·Vd + (I(Vlim) - Gd·Vlim). */
-  ieq = current - gd * vd_lim;
+  diode_shockley(isat, n, vt, vd, &current, &gd);
+  /* Companion about Vd: I ≈ Gd·V + (I(Vd) - Gd·Vd). */
+  ieq = current - gd * vd;
 
   if (!physics2_accumulator_add(context->accumulator, terminals[0], terminals[0],
                                 gd))
@@ -1860,22 +1897,11 @@ bool physics2_primitive_init_logic_gate(PhysicsPrimitive *primitive,
 
 static void bjt_diode_branch(double ies_or_ics, double vt, double v_junc,
                              double *i_branch, double *gd) {
-  double vlim;
-  double exponent;
-  double exp_value;
-  /* Soft-limit like diode (Vcrit ≈ Vt*log(1e10)). */
-  double vcrit = vt * log(1.0e10);
-  vlim = v_junc;
-  if (vlim > vcrit)
-    vlim = vcrit + log(1.0 + (vlim - vcrit));
-  exponent = vlim / vt;
-  if (exponent > 40.0)
-    exponent = 40.0;
-  if (exponent < -40.0)
-    exponent = -40.0;
-  exp_value = exp(exponent);
-  *i_branch = ies_or_ics * (exp_value - 1.0);
-  *gd = ies_or_ics * exp_value / vt;
+  double e;
+  double de;
+  junction_exp(v_junc / vt, &e, &de);
+  *i_branch = ies_or_ics * (e - 1.0);
+  *gd = ies_or_ics * de / vt;
 }
 
 static bool bjt_ebers_moll_stamp(const PhysicsPrimitive *primitive,
@@ -2299,17 +2325,39 @@ static bool opamp_stamp(const PhysicsPrimitive *primitive,
                         BranchId branch) {
   /* Same MNA as VCVS: out = A*(in+ - in-). */
   PhysicsPrimitive tmp;
+  NodeId out, ref, vcc;
+  double y, span, a;
   if (!primitive)
     return false;
   tmp = *primitive;
   tmp.payload.controlled_source.gain.nominal = primitive->payload.opamp.gain;
   tmp.payload.controlled_source.gain.tolerance_pct = 0.0;
-  return vcvs_stamp(&tmp, context, terminals, terminal_count, branch);
+  if (!primitive->payload.opamp.railed)
+    return vcvs_stamp(&tmp, context, terminals, terminal_count, branch);
+
+  /* Railed: linear inside [0, span]; else branch row pins out to a rail. */
+  if (!context || !terminals || terminal_count != 5 ||
+      branch == PHYSICS2_BRANCH_NONE ||
+      terminals[4] >= context->solution_size ||
+      !controlled_nodes_valid(terminals, context))
+    return false;
+  out = terminals[0];
+  ref = terminals[1];
+  vcc = terminals[4];
+  a = primitive->payload.opamp.gain;
+  y = a * (context->solution[terminals[2]] - context->solution[terminals[3]]);
+  span = context->solution[vcc] - context->solution[ref];
+  if (y >= 0.0 && y <= span)
+    return vcvs_stamp(&tmp, context, terminals, 4, branch);
+  return physics2_accumulator_add(context->accumulator, out, branch, 1.0) &&
+         physics2_accumulator_add(context->accumulator, ref, branch, -1.0) &&
+         physics2_accumulator_add(context->accumulator, branch, out, 1.0) &&
+         physics2_accumulator_add(context->accumulator, branch,
+                                  y > span ? vcc : ref, -1.0);
 }
 
 static uint8_t opamp_terminal_count(const PhysicsPrimitive *primitive) {
-  (void)primitive;
-  return 4;
+  return primitive && primitive->payload.opamp.railed ? 5 : 4;
 }
 
 static uint8_t opamp_extra_unknowns(const PhysicsPrimitive *primitive) {
@@ -2382,13 +2430,16 @@ static bool ldo_stamp(const PhysicsPrimitive *primitive,
   /* I into OUT = Vset*g - (Vout-Vgnd)*g ; optional Ilimit clamp */
   i_out = vset * g - (vout - vgnd) * g;
   if (ilimit > 0.0 && i_out > ilimit) {
-    /* Current-source mode: fixed Ilimit out of LDO (into load). */
+    /* Current-source mode: I = Ilimit. The exact derivative is 0, which
+     * leaves an unloaded output floating mid-Newton; a 1e-6·g slope keeps
+     * the Jacobian regular and still gives I = Ilimit at the linearization
+     * point, so converged current-limit solutions are unchanged. */
     i_out = ilimit;
     dI_dVin = 0.0;
-    dI_dVout = 0.0;
-    dI_dVgnd = 0.0;
-    ieq_out = i_out;
-    ieq_gnd = -i_out;
+    dI_dVout = -1.0e-6 * g;
+    dI_dVgnd = 1.0e-6 * g;
+    ieq_out = i_out - dI_dVout * vout - dI_dVgnd * vgnd;
+    ieq_gnd = -i_out + dI_dVout * vout + dI_dVgnd * vgnd;
   } else {
     /* Vset = a*Vin + b*Vgnd + c; regulation: a=0,b=0; dropout: a=1,b=-1 */
     dI_dVin = dVset_dVin * g;
@@ -2404,24 +2455,18 @@ static bool ldo_stamp(const PhysicsPrimitive *primitive,
               (-dI_dVgnd) * vgnd;
   }
 
-  if (ilimit > 0.0 && i_out >= ilimit) {
-    if (!physics2_accumulator_add_rhs(context->accumulator, n_out, -ieq_out) ||
-        !physics2_accumulator_add_rhs(context->accumulator, n_gnd, -ieq_gnd))
-      return false;
-    return true;
-  }
-
+  /* The current delivered into OUT leaves VIN (pass element), not GND. */
   if (!physics2_accumulator_add(context->accumulator, n_out, n_in, dI_dVin) ||
       !physics2_accumulator_add(context->accumulator, n_out, n_out, dI_dVout) ||
       !physics2_accumulator_add(context->accumulator, n_out, n_gnd, dI_dVgnd) ||
-      !physics2_accumulator_add(context->accumulator, n_gnd, n_in, -dI_dVin) ||
-      !physics2_accumulator_add(context->accumulator, n_gnd, n_out,
+      !physics2_accumulator_add(context->accumulator, n_in, n_in, -dI_dVin) ||
+      !physics2_accumulator_add(context->accumulator, n_in, n_out,
                                 -dI_dVout) ||
-      !physics2_accumulator_add(context->accumulator, n_gnd, n_gnd, -dI_dVgnd))
+      !physics2_accumulator_add(context->accumulator, n_in, n_gnd, -dI_dVgnd))
     return false;
 
   if (!physics2_accumulator_add_rhs(context->accumulator, n_out, -ieq_out) ||
-      !physics2_accumulator_add_rhs(context->accumulator, n_gnd, -ieq_gnd))
+      !physics2_accumulator_add_rhs(context->accumulator, n_in, -ieq_gnd))
     return false;
 
   return true;
@@ -2533,6 +2578,14 @@ bool physics2_primitive_init_opamp(PhysicsPrimitive *primitive, const char *name
   strncpy(primitive->name, name, sizeof(primitive->name) - 1);
   primitive->name[sizeof(primitive->name) - 1] = '\0';
   primitive->payload.opamp.gain = gain;
+  return true;
+}
+
+bool physics2_primitive_init_opamp_railed(PhysicsPrimitive *primitive,
+                                          const char *name, double gain) {
+  if (!physics2_primitive_init_opamp(primitive, name, gain))
+    return false;
+  primitive->payload.opamp.railed = 1;
   return true;
 }
 
@@ -3000,6 +3053,38 @@ bool physics2_interpreter_execute(PhysicsInterpreter *interpreter) {
   return true;
 }
 
+/* ||A(x)x - b(x)||inf at context->solution, from the current assembly. The
+ * companions are exact at their own linearization point, so this is the true
+ * KCL / branch residual. *scale_out gets the largest term (relative gate). */
+static double assembled_residual(const PhysicsExecutionContext *context,
+                                 NodeId reference_node, double *scale_out) {
+  double r_norm = 0.0, scale = 0.0;
+  size_t row, col;
+  for (row = 0; row < context->solution_size; row++) {
+    double r;
+    if (row == reference_node)
+      continue;
+    r = -physics2_accumulator_get_rhs(context->accumulator, row);
+    if (fabs(r) > scale)
+      scale = fabs(r);
+    for (col = 0; col < context->solution_size; col++) {
+      double term;
+      if (col == reference_node)
+        continue;
+      term = physics2_accumulator_get(context->accumulator, row, col) *
+             context->solution[col];
+      if (fabs(term) > scale)
+        scale = fabs(term);
+      r += term;
+    }
+    if (fabs(r) > r_norm)
+      r_norm = fabs(r);
+  }
+  if (scale_out)
+    *scale_out = scale;
+  return r_norm;
+}
+
 bool physics2_context_step(PhysicsExecutionContext *context,
                            NodeId reference_node) {
   PhysicsInterpreter interpreter;
@@ -3008,6 +3093,7 @@ bool physics2_context_step(PhysicsExecutionContext *context,
   int has_nonlinear = 0;
   double *x_trial = NULL;
   double *x_cand = NULL;
+  double *x_base = NULL;
   PhysicsPrimitiveState *snap_states = NULL;
   double *snap_solution = NULL;
   double snap_time = 0.0;
@@ -3048,6 +3134,7 @@ bool physics2_context_step(PhysicsExecutionContext *context,
         &context->program->primitives,
         context->program->instructions[i].primitive_id);
     if (p && (p->kind == PHYS_PRIM_DIODE || p->kind == PHYS_PRIM_LDO ||
+              (p->kind == PHYS_PRIM_OPAMP && p->payload.opamp.railed) ||
               (p->kind == PHYS_PRIM_TRANSISTOR &&
                (p->payload.transistor.subtype == PHYS_XSTR_BJT ||
                 p->payload.transistor.subtype == PHYS_XSTR_NMOS ||
@@ -3090,7 +3177,8 @@ bool physics2_context_step(PhysicsExecutionContext *context,
 
     x_trial = calloc(context->solution_size, sizeof(*x_trial));
     x_cand = calloc(context->solution_size, sizeof(*x_cand));
-    if (context->solution_size > 0 && (!x_trial || !x_cand))
+    x_base = calloc(context->solution_size, sizeof(*x_base));
+    if (context->solution_size > 0 && (!x_trial || !x_cand || !x_base))
       goto newton_fail;
 
     context->quiet = 1;
@@ -3098,12 +3186,13 @@ bool physics2_context_step(PhysicsExecutionContext *context,
     for (iter = 0; iter < max_newton; iter++) {
       double x_norm = 0.0;
       double update_norm = 0.0;
-      double alpha;
+      double alpha, r0, best_r, best_alpha;
       int accepted = 0;
       size_t k;
 
       if (!physics2_interpreter_execute(&interpreter))
         goto newton_fail;
+      r0 = assembled_residual(context, reference_node, NULL);
       if (!physics2_accumulator_solve(context->accumulator, reference_node,
                                       x_trial)) {
         context->newton.status = PHYSICS2_NEWTON_SINGULAR;
@@ -3140,20 +3229,36 @@ bool physics2_context_step(PhysicsExecutionContext *context,
 
       if (update_norm < abs_tol ||
           update_norm < rel_tol * (1.0 + x_norm)) {
+        /* Small step is necessary, not sufficient: check ||F(x)||inf. */
+        double r_norm, scale;
         memcpy(context->solution, x_trial,
                context->solution_size * sizeof(*context->solution));
-        context->newton.residual_norm = update_norm;
+        if (!physics2_interpreter_execute(&interpreter))
+          goto newton_fail;
+        r_norm = assembled_residual(context, reference_node, &scale);
+        context->newton.residual_norm = r_norm;
         context->newton.damping = 1.0;
+        if (r_norm > abs_tol + rel_tol * scale) {
+          context->newton.status = PHYSICS2_NEWTON_DIVERGED;
+          snprintf(context->newton.failure, sizeof(context->newton.failure),
+                   "NEWTON_RESIDUAL %.3g", r_norm);
+          goto newton_fail;
+        }
         context->newton.status = PHYSICS2_NEWTON_OK;
         accepted = 1;
         break;
       }
 
-      /* Line search: α = 1, 1/2, 1/4, ... accept first finite candidate. */
+      /* Backtracking line search on ||F||inf: α = 1, 1/2, ... 1/64; take the
+       * first α that lowers the residual, else the lowest one seen. */
+      memcpy(x_base, context->solution,
+             context->solution_size * sizeof(*x_base));
+      best_r = INFINITY;
+      best_alpha = 0.0;
       for (alpha = 1.0; alpha >= 1.0 / 64.0; alpha *= 0.5) {
+        double r;
         for (k = 0; k < context->solution_size; k++) {
-          double d = x_trial[k] - context->solution[k];
-          x_cand[k] = context->solution[k] + alpha * d;
+          x_cand[k] = x_base[k] + alpha * (x_trial[k] - x_base[k]);
           if (!isfinite(x_cand[k]))
             break;
         }
@@ -3161,10 +3266,23 @@ bool physics2_context_step(PhysicsExecutionContext *context,
           continue;
         memcpy(context->solution, x_cand,
                context->solution_size * sizeof(*context->solution));
-        context->newton.damping = alpha;
-        context->newton.residual_norm = update_norm * alpha;
+        if (!physics2_interpreter_execute(&interpreter))
+          goto newton_fail;
+        r = assembled_residual(context, reference_node, NULL);
+        if (isfinite(r) && r < best_r) {
+          best_r = r;
+          best_alpha = alpha;
+        }
+        if (r < r0)
+          break;
+      }
+      if (best_alpha > 0.0) {
+        for (k = 0; k < context->solution_size; k++)
+          context->solution[k] =
+              x_base[k] + best_alpha * (x_trial[k] - x_base[k]);
+        context->newton.damping = best_alpha;
+        context->newton.residual_norm = best_r;
         accepted = 1;
-        break;
       }
 
       if (!accepted) {
@@ -3187,8 +3305,10 @@ bool physics2_context_step(PhysicsExecutionContext *context,
 
     free(x_trial);
     free(x_cand);
+    free(x_base);
     x_trial = NULL;
     x_cand = NULL;
+    x_base = NULL;
   }
 
   for (i = 0; i < context->program->instruction_count; i++) {
@@ -3231,6 +3351,7 @@ newton_fail:
   context->quiet = 0;
   free(x_trial);
   free(x_cand);
+  free(x_base);
 step_fail:
   if (transactional) {
     if (snap_states && context->states)

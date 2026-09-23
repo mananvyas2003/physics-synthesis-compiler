@@ -44,7 +44,6 @@ int golden_g32_vcvs(FILE *out);
 int golden_g33_vccs(FILE *out);
 int golden_g34_ccvs(FILE *out);
 int golden_g35_cccs(FILE *out);
-int golden_g36_vcvs_phys_lower(FILE *out);
 int golden_g37_newton_report(FILE *out);
 int golden_g38_newton_bad_init(FILE *out);
 int golden_g39_newton_diverge(FILE *out);
@@ -80,15 +79,15 @@ int golden_g68_transient_reject(FILE *out);
 int golden_g69_dfm_pass(FILE *out);
 int golden_g70_dfm_missing_package(FILE *out);
 int golden_g71_dfm_telemetry(FILE *out);
-int golden_g72_pcb_nets(FILE *out);
 int golden_g73_nlp_lex(FILE *out);
 int golden_g74_nlp_between(FILE *out);
 int golden_g75_nlp_ambiguous(FILE *out);
 int golden_g76_nlp_runtime(FILE *out);
 int golden_g77_nlp_corpus(FILE *out, const char *fixture_root);
-int golden_g78_gemini_replay(FILE *out, const char *fixture_root);
-int golden_g79_gemini_live_gate(FILE *out);
 int golden_g80_macro_corpus(FILE *out, const char *fixture_root);
+int golden_g81_rail_sources(FILE *out);
+int golden_g82_generate_physics(FILE *out, const char *fixture_root);
+int golden_g83_nlp_physics(FILE *out, const char *fixture_root);
 
 #ifdef __cplusplus
 }

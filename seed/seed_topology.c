@@ -10,10 +10,7 @@
 #include <string.h>
 
 static PartTypes part_type_from_string(const char *text) {
-  PartTypes t = part_lib_db_type(text);
-  if (t != PART_OTHER || part_lib_find(text) != NULL)
-    return t;
-  return PART_OTHER;
+  return part_lib_db_type(text);
 }
 
 static char *read_entire_file(const char *path, size_t *out_size) {
@@ -167,11 +164,10 @@ int seed_load_topology_json_ex(DB *db, const char *json_path,
         fprintf(stderr, "[SEED] %s\n", diag_last_error());
         return 1;
       }
-      if (part_type_from_string(type) == PART_OTHER) {
+      if (!part_lib_find(type)) {
         cJSON_Delete(root);
         diag_set_error(
-            "%s components are not currently available in the active library. "
-            "Supported: resistor, capacitor, diode, led.",
+            "%s components are not currently available in the active library.",
             type);
         fprintf(stderr, "[SEED] %s\n", diag_last_error());
         return 1;

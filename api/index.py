@@ -15,10 +15,9 @@ if str(ROOT) not in sys.path:
 
 os.environ["VERCEL"] = "1"
 
-from web.server import Handler as BaseHandler, load_dotenv, load_gemini_key_local, ensure_user_data
+from web.server import Handler as BaseHandler, load_dotenv, ensure_user_data
 
 load_dotenv(ROOT / ".env")
-load_gemini_key_local(ROOT / "GEMINI_API_KEY.local")
 try:
     ensure_user_data()
 except Exception:

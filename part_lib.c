@@ -75,6 +75,7 @@ static const PartLibEntry g_entries[] = {
      1},
     {"bjt", PART_TRANSISTOR, 3, pins_bjt, "Device:Q_NPN_BCE", "none", 1.0, 1},
     {"mosfet", PART_TRANSISTOR, 3, pins_bjt, "Device:Q_NMOS_GSD", "none", 1.0, 1},
+    {"pmos", PART_TRANSISTOR, 3, pins_bjt, "Device:Q_PMOS_GSD", "none", 1.0, 1},
     {"opamp", PART_IC, 5, pins_opamp, "Device:OpAmp", "none", 1.0, 1},
     {"regulator", PART_IC, 3, pins_ldo, "Device:LDO", "volt", 3.3, 1},
     {"ldo", PART_IC, 3, pins_ldo, "Device:LDO", "volt", 3.3, 1},

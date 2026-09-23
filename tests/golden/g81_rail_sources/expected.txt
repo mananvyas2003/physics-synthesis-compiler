@@ -1,0 +1,5 @@
+g81_rail_sources
+rail_parse_ok=1
+unloaded_sense_ok=1
+two_rail_ok=1
+no_rail_rejected=1

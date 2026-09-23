@@ -1,4 +1,0 @@
-g78_gemini_replay
-name=gemini_replay_divider
-replay=1
-ok=1

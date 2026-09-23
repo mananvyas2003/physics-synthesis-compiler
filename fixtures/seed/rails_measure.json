@@ -1,0 +1,23 @@
+{
+  "schema": "schematic-ir.v1",
+  "name": "rails_measure",
+  "description": "12 V rail declared in IR; 10k/2k divider with a measured, limited sense node",
+  "category": "Analog",
+  "rails": { "VIN": 12.0 },
+  "measure": { "node": "VOUT", "min": 1.9, "max": 2.1 },
+  "parts": [
+    { "mpn": "DEMO-10K-0603-A", "type": "resistor", "value": 10000.0, "package": "0603", "v_rating": 50.0, "power_rating_w": 0.1 },
+    { "mpn": "DEMO-2K-0603-A", "type": "resistor", "value": 2000.0, "package": "0603", "v_rating": 50.0, "power_rating_w": 0.1 }
+  ],
+  "components": [
+    { "role": "R1", "part_type": "resistor", "quantity": 1, "target_value": 10000.0, "package": "0603" },
+    { "role": "R2", "part_type": "resistor", "quantity": 1, "target_value": 2000.0, "package": "0603" }
+  ],
+  "nodes": ["VIN", "VOUT", "GND"],
+  "connections": [
+    { "role": "R1", "pin": "1", "node": "VIN" },
+    { "role": "R1", "pin": "2", "node": "VOUT" },
+    { "role": "R2", "pin": "1", "node": "VOUT" },
+    { "role": "R2", "pin": "2", "node": "GND" }
+  ]
+}

@@ -12,7 +12,7 @@ External surface: CLI + JSON fixtures + chat UI.
 
 ```
 prompt / design JSON
-  → schematic-ir (Gemini or fixtures)
+  → schematic-ir (offline C NLP, --spec, --compose, or design JSON)
   → bind + Physics2 verify
   → vendor Design IR + DFM (electronics_core)
   → KiCad / BOM / netlist emit
@@ -60,9 +60,8 @@ export SYNTH_BIN=$PWD/build/synth
 ./scripts/run_kicad_erc.sh out_erc   # requires kicad-cli
 ```
 
-Live Gemini prompt→schematic: set `GEMINI_API_KEY` (see [docs/GEMINI_PROMPT.md](docs/GEMINI_PROMPT.md)).
-
-**Hosting:** [Vercel](docs/VERCEL_DEPLOYMENT.md) (serverless, ~50s) or **[Railway](docs/RAILWAY.md)** (Docker service, 300s generate).
+Prompt text goes through the deterministic C NLP frontend (no network, no API key); see [docs/NLP.md](docs/NLP.md).
+Unsupported or vague prompts fail with a clarifying question rather than an invented design.
 
 ## Chat UI (browser)
 
@@ -71,7 +70,7 @@ python web/server.py
 # open http://127.0.0.1:8765/
 ```
 
-Put `GEMINI_API_KEY` in a repo-root `.env` file. See [docs/WEB_UI.md](docs/WEB_UI.md).
+No API key needed. See [docs/WEB_UI.md](docs/WEB_UI.md).
 Library panel: upload JLCPCB parts CSV + DFM JSON; defaults use project DEMO parts
 and vendor `standard` manufacturing profile.
 

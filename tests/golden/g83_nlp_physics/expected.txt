@@ -1,0 +1,9 @@
+g83_nlp_physics
+prompt1_ok=1
+prompt2_ok=1
+prompt3_ok=1
+prompt4_ok=1
+prompt5_ok=1
+prompt6_ok=1
+prompt7_ok=1
+prompt8_ok=1

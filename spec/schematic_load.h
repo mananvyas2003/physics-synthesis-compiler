@@ -20,10 +20,9 @@ int schematic_ir_load_and_validate(const char *path, SchematicIrMeta *out);
 
 /*
  * Prompt → schematic IR.
- * If GEMINI_API_KEY/SYNTH_LLM_API_KEY set and force_offline==0: live Gemini.
- * Else if force_offline + fixtures/prompts/NNN.txt: corpus map only.
+ * force_offline + fixtures/prompts/NNN.txt: corpus map only.
  * Else: deterministic offline NLP on text (no fixture filename matching).
- * preferred_out_path: write target for Gemini/NLP; may be NULL for corpus map.
+ * preferred_out_path: write target for NLP; may be NULL for corpus map.
  */
 int schematic_provider_from_prompt(const char *prompt_path,
                                    const char *prompt_text_override,

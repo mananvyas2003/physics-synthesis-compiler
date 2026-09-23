@@ -1,5 +1,5 @@
 g77_nlp_corpus
 total=30
-parsed=15
-clarified=15
-ok=1
+verified=14
+clarified=16
+outcomes=CVCVCCVVCVCCCVVCVVCCCCVVVVCVCC

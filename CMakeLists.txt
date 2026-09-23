@@ -95,11 +95,9 @@ add_library(synth_core STATIC
   emit/emit_bom.c
   emit/emit_netlist.c
   emit/emit_snapshot.c
-  emit/emit_pcb.c
   spec/spec_load.c
   spec/llm_provider.c
   spec/schematic_load.c
-  spec/gemini_schematic.c
   nlp/nlp.c
   nlp/nlp_runtime.c
   compose/compose.c
@@ -122,12 +120,6 @@ elseif(UNIX AND NOT APPLE)
   target_link_libraries(synth_core PUBLIC pthread dl m)
 elseif(APPLE)
   target_link_libraries(synth_core PUBLIC pthread m)
-endif()
-
-option(SYNTH_ENABLE_ONNX "Link optional ONNX Runtime for neural NLP (off by default)" OFF)
-if(SYNTH_ENABLE_ONNX)
-  message(WARNING "SYNTH_ENABLE_ONNX: ORT not vendored yet; nlp_runtime stays fail-closed")
-  target_compile_definitions(synth_core PUBLIC SYNTH_ENABLE_ONNX=1)
 endif()
 
 add_executable(synth main.c)

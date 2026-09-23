@@ -6,6 +6,7 @@
 #include "design.h"
 #include "dfm.h"
 #include "diagnostic.h"
+#include "part_lib.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -43,12 +44,22 @@ static double package_height_mm(const char *package) {
   return 0.5;
 }
 
-static int footprint_for_package(const char *package, char *out, size_t n) {
+static int footprint_for_package(const char *package, PartTypes type, char *out,
+                                 size_t n) {
+  const char *prefix = "Resistor_SMD:R_";
   if (!package || !package[0]) {
     out[0] = '\0';
     return 1;
   }
-  snprintf(out, n, "Resistor_SMD:R_%s", package);
+  if (type == PART_CAPACITOR)
+    prefix = "Capacitor_SMD:C_";
+  else if (type == PART_INDUCTOR)
+    prefix = "Inductor_SMD:L_";
+  else if (type == PART_DIODE)
+    prefix = "LED_SMD:LED_";
+  else if (type == PART_TRANSISTOR)
+    prefix = "Package_TO_SOT_SMD:SOT-23_";
+  snprintf(out, n, "%s%s", prefix, package);
   return 0;
 }
 
@@ -108,7 +119,8 @@ int vendor_dfm_check_schematic(const CompiledSchematic *schematic,
     strncpy(c.manufacturer_part_number, cc->part.mpn,
             sizeof(c.manufacturer_part_number) - 1);
     c.package = cc->part.package[0] ? cc->part.package : NULL;
-    if (footprint_for_package(cc->part.package, fp_buf, sizeof(fp_buf)) == 0)
+    if (footprint_for_package(cc->part.package, cc->part.type, fp_buf,
+                              sizeof(fp_buf)) == 0)
       c.footprint = fp_buf;
     else
       c.footprint = NULL;
@@ -129,21 +141,37 @@ int vendor_dfm_check_schematic(const CompiledSchematic *schematic,
       c.model.data.diode.forward_voltage_v = c.value_range;
       c.model.data.diode.reverse_voltage_v =
           cc->part.v_rating > 0 ? cc->part.v_rating : 5.0;
-    } else {
+    } else if (cc->part.type == PART_RESISTOR) {
       component_set_value(&c, cc->part.value > 0 ? cc->part.value : 1000.0, 1.0);
       c.model.data.resistor.resistance_ohm = c.value_range;
+    } else {
+      /* Non-resistive parts must not reach resistor-only rules. */
+      c.symbol = part_lib_kicad_id(cc->part.type);
+      c.model.kind = cc->part.type == PART_INDUCTOR    ? COMPONENT_INDUCTOR
+                     : cc->part.type == PART_IC        ? COMPONENT_IC
+                     : cc->part.type == PART_CONNECTOR ? COMPONENT_CONNECTOR
+                     : cc->part.type == PART_OTHER     ? COMPONENT_SOURCE
+                     : (strcmp(cc->kind, "mosfet") == 0 ||
+                        strcmp(cc->kind, "pmos") == 0)
+                           ? COMPONENT_MOSFET
+                           : COMPONENT_BJT;
+      component_set_value(&c, cc->part.value > 0 ? cc->part.value : 1.0, 1.0);
     }
     c.electrical.max_voltage = cc->part.v_rating;
     c.electrical.max_power = cc->part.power_rating_w;
     c.dimensions.height_mm = package_height_mm(cc->part.package);
-    if (component_add_pin(&c, 1, "1") != 0 ||
-        component_add_pin(&c, 2, "2") != 0) {
-      component_free(&c);
-      goto done;
-    }
-    if (cc->pin_count >= 3 && component_add_pin(&c, 3, cc->pin3[0] ? cc->pin3 : "3") != 0) {
-      component_free(&c);
-      goto done;
+    {
+      int pc = cc->pin_count > 0 ? cc->pin_count : 2;
+      int k;
+      for (k = 0; k < pc && k < 8; k++) {
+        char num[4];
+        snprintf(num, sizeof(num), "%d", k + 1);
+        if (component_add_pin(&c, (uint16_t)(k + 1),
+                              cc->pins[k][0] ? cc->pins[k] : num) != 0) {
+          component_free(&c);
+          goto done;
+        }
+      }
     }
     if (design_add_component(&design, &c, &cid) != 0) {
       component_free(&c);
