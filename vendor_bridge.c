@@ -161,13 +161,15 @@ int vendor_dfm_check_schematic(const CompiledSchematic *schematic,
     c.electrical.max_power = cc->part.power_rating_w;
     c.dimensions.height_mm = package_height_mm(cc->part.package);
     {
+      /* Literals only: component/design intern the pointer, so a stack buffer
+       * is use-after-scope under ASan (and UB otherwise). */
+      static const char *const pin_num[] = {"1", "2", "3", "4",
+                                            "5", "6", "7", "8"};
       int pc = cc->pin_count > 0 ? cc->pin_count : 2;
       int k;
       for (k = 0; k < pc && k < 8; k++) {
-        char num[4];
-        snprintf(num, sizeof(num), "%d", k + 1);
         if (component_add_pin(&c, (uint16_t)(k + 1),
-                              cc->pins[k][0] ? cc->pins[k] : num) != 0) {
+                              cc->pins[k][0] ? cc->pins[k] : pin_num[k]) != 0) {
           component_free(&c);
           goto done;
         }

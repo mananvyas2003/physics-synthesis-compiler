@@ -30,8 +30,22 @@
 #endif
 
 static int ensure_dir(const char *path) {
+  char buf[512];
+  size_t i, n;
   if (!path || path[0] == '\0')
     return 1;
+  n = strlen(path);
+  if (n >= sizeof(buf))
+    return 1;
+  memcpy(buf, path, n + 1);
+  for (i = 1; i < n; i++) {
+    if (buf[i] != '/' && buf[i] != '\\')
+      continue;
+    buf[i] = '\0';
+    if (buf[0])
+      synth_mkdir(buf);
+    buf[i] = path[i];
+  }
   synth_mkdir(path);
   return 0;
 }

@@ -7,6 +7,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#endif
+
 typedef struct {
   const char *name;
   const char *expected_relpath;
@@ -646,6 +652,11 @@ int main(int argc, char **argv) {
 
   fixture_root = cli_fixture_root();
   g_cases = cJSON_CreateArray();
+#ifdef _WIN32
+  _mkdir("audit_build");
+#else
+  mkdir("audit_build", 0755);
+#endif
 
   for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
     char *expected_path =
