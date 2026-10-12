@@ -15,6 +15,7 @@
 | `profile_consistency` | layer/via/drill/annular/trace/clearance/edge geometry |
 | `package_vs_profile` | known package body/pad vs min_clearance / min_trace_width |
 | `package_current` | resistor √(Pmax/R) vs crude package ampacity |
+| `structure` | netlist integrity: duplicate/empty refs, shorted 2-terminal parts, duplicate pins/net names, pin↔net asymmetry, orphan/empty nets, non-positive R |
 
 ## Profile fields
 

@@ -72,5 +72,5 @@ double e_series_nearest(ESeries series, double value) {
 bool e_series_contains(ESeries series, double value, double tolerance_ppm) {
   double nearest = e_series_nearest(series, value);
   double rel_diff = fabs(value - nearest) / value;
-  return rel_diff <= tolerance_ppm;
+  return rel_diff <= tolerance_ppm / 1000000.0;
 }

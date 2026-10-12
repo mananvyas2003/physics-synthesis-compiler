@@ -4,6 +4,7 @@
 #include "design.h"
 #include "vec.h"
 
+#include <ctype.h>
 #include <math.h>
 #include <string.h>
 
@@ -378,6 +379,136 @@ static int check_package_current(const Design *design, const DfmProfile *profile
   return errors;
 }
 
+static int ref_equals_nocase(const char *a, const char *b) {
+  while (*a && *b) {
+    if (tolower((unsigned char)*a) != tolower((unsigned char)*b))
+      return 0;
+    ++a;
+    ++b;
+  }
+  return *a == '\0' && *b == '\0';
+}
+
+#define STRUCT_ERR(target, id, ...)                                            \
+  do {                                                                         \
+    if (diagnostic_add(out, DIAGNOSTIC_ERROR, (target), (uint32_t)(id),        \
+                       __VA_ARGS__) != 0)                                      \
+      return -1;                                                               \
+    errors++;                                                                  \
+  } while (0)
+
+/* Netlist integrity. Unconnected pins are left to floating_pin. */
+static int check_structure(const Design *design, const DfmProfile *profile,
+                           DiagnosticList *out) {
+  int errors = 0;
+
+  (void)profile;
+  if (!design || !out)
+    return -1;
+
+  for (size_t ci = 0; ci < vec_len(design->components); ++ci) {
+    const Component *c = &design->components[ci];
+    ComponentKind k = c->model.kind;
+
+    if (!c->reference[0])
+      STRUCT_ERR(DIAG_TARGET_COMPONENT, ci, "component_reference",
+                 "component has an empty reference designator");
+    for (size_t cj = ci + 1; cj < vec_len(design->components); ++cj) {
+      if (c->reference[0] &&
+          ref_equals_nocase(c->reference, design->components[cj].reference))
+        STRUCT_ERR(DIAG_TARGET_COMPONENT, cj, "duplicate_reference",
+                   "duplicate component reference '%s' (case-insensitive)",
+                   c->reference);
+    }
+    if (k == COMPONENT_RESISTOR || k == COMPONENT_CAPACITOR ||
+        k == COMPONENT_INDUCTOR || k == COMPONENT_DIODE ||
+        k == COMPONENT_LED) {
+      const Pin *p1 = component_find_pin_const(c, 1);
+      const Pin *p2 = component_find_pin_const(c, 2);
+      if (!p1 || !p2)
+        STRUCT_ERR(DIAG_TARGET_COMPONENT, ci, "required_terminal_missing",
+                   "%s requires terminal pins 1 and 2", c->reference);
+      else if (p1->net_id >= 0 && p1->net_id == p2->net_id)
+        STRUCT_ERR(DIAG_TARGET_COMPONENT, ci, "shorted_two_terminal_component",
+                   "%s pins 1 and 2 are connected to the same net ID %d",
+                   c->reference, (int)p1->net_id);
+    }
+    if (k == COMPONENT_RESISTOR) {
+      double r = c->model.data.resistor.resistance_ohm.nominal;
+      if (!(r > 0.0) || !isfinite(r))
+        STRUCT_ERR(DIAG_TARGET_COMPONENT, ci, "invalid_resistance",
+                   "%s resistance must be finite and positive", c->reference);
+    }
+    for (size_t pi = 0; pi < vec_len(c->pins); ++pi) {
+      const Pin *pin = &c->pins[pi];
+      const Net *net;
+      int seen = 0;
+
+      for (size_t pj = pi + 1; pj < vec_len(c->pins); ++pj) {
+        if (pin->number == c->pins[pj].number)
+          STRUCT_ERR(DIAG_TARGET_COMPONENT, ci, "duplicate_pin_number",
+                     "%s contains duplicate pin number %u", c->reference,
+                     (unsigned)pin->number);
+      }
+      if (pin->net_id == -1)
+        continue;
+      if (pin->net_id < 0 || (size_t)pin->net_id >= vec_len(design->nets)) {
+        STRUCT_ERR(DIAG_TARGET_COMPONENT, ci, "invalid_net_id",
+                   "%s pin %u refers to invalid net ID %d", c->reference,
+                   (unsigned)pin->number, (int)pin->net_id);
+        continue;
+      }
+      net = &design->nets[pin->net_id];
+      for (size_t n = 0; n < vec_len(net->connections); ++n) {
+        if (net->connections[n].component_id == (uint32_t)ci &&
+            net->connections[n].pin_number == pin->number)
+          seen++;
+      }
+      if (seen != 1)
+        STRUCT_ERR(DIAG_TARGET_COMPONENT, ci, "pin_net_asymmetry",
+                   "%s pin %u and net '%s' do not have exactly one reciprocal "
+                   "connection",
+                   c->reference, (unsigned)pin->number,
+                   net->name ? net->name : "(unnamed)");
+    }
+  }
+
+  for (size_t ni = 0; ni < vec_len(design->nets); ++ni) {
+    const Net *net = &design->nets[ni];
+    const char *name = net->name && net->name[0] ? net->name : NULL;
+
+    if (net->id != (uint32_t)ni)
+      STRUCT_ERR(DIAG_TARGET_NET, ni, "net_id_index_mismatch",
+                 "net at index %zu has ID %u", ni, (unsigned)net->id);
+    if (!name)
+      STRUCT_ERR(DIAG_TARGET_NET, ni, "empty_net_name",
+                 "net at index %zu has an empty name", ni);
+    for (size_t nj = ni + 1; name && nj < vec_len(design->nets); ++nj) {
+      if (design->nets[nj].name && strcmp(name, design->nets[nj].name) == 0)
+        STRUCT_ERR(DIAG_TARGET_NET, nj, "duplicate_net_name",
+                   "net name '%s' is assigned to multiple net IDs", name);
+    }
+    if (vec_len(net->connections) == 0)
+      STRUCT_ERR(DIAG_TARGET_NET, ni, "empty_net",
+                 "net '%s' has no attached component pins",
+                 name ? name : "(unnamed)");
+    for (size_t k = 0; k < vec_len(net->connections); ++k) {
+      const NetConnection *conn = &net->connections[k];
+      const Component *c =
+          design_get_component_const(design, conn->component_id);
+      const Pin *pin = c ? component_find_pin_const(c, conn->pin_number) : NULL;
+      if (!pin || pin->net_id != (int32_t)net->id)
+        STRUCT_ERR(DIAG_TARGET_NET, ni, "orphan_net_connection",
+                   "net '%s' contains an orphan or mismatched component-pin "
+                   "connection",
+                   name ? name : "(unnamed)");
+    }
+  }
+  return errors;
+}
+
+#undef STRUCT_ERR
+
 static const DfmRule BUILTIN_RULES[] = {
     {"floating_pin", check_no_floating_pins},
     {"missing_footprint", check_missing_footprints},
@@ -386,7 +517,8 @@ static const DfmRule BUILTIN_RULES[] = {
     {"component_height", check_invalid_dimensions},
     {"profile_consistency", check_profile_consistency},
     {"package_vs_profile", check_package_vs_profile},
-    {"package_current", check_package_current}};
+    {"package_current", check_package_current},
+    {"structure", check_structure}};
 
 int dfm_registry_init(DfmRegistry *registry) {
   if (!registry) {

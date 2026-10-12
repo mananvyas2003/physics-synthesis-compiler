@@ -17,8 +17,12 @@ static void copy_fixed_string(
         return;
     }
 
-    strncpy(destination, source, destination_size - 1);
-    destination[destination_size - 1] = '\0';
+    size_t length = strlen(source);
+    if (length >= destination_size) {
+        length = destination_size - 1;
+    }
+    memcpy(destination, source, length);
+    destination[length] = '\0';
 }
 
 static const char *design_intern(

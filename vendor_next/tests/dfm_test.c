@@ -120,6 +120,32 @@ int main(void)
 
     assert(bad_id < vec_len(design.components));
 
+    /* Both terminals on one net is a short, caught by the structure rule. */
+    {
+        Design shorted;
+        uint32_t rid;
+        uint32_t net_id;
+        int saw_short = 0;
+
+        assert(design_init(&shorted) == 0);
+        add_basic_resistor(&shorted, "R1", "Resistor_SMD:R_0603_1608Metric",
+                           0, &rid);
+        assert(design_add_net(&shorted, "N_SHORT", &net_id) == 0);
+        assert(design_connect_pin(&shorted, rid, 1, net_id) == 0);
+        assert(design_connect_pin(&shorted, rid, 2, net_id) == 0);
+        diagnostic_list_free(&diagnostics);
+        diagnostic_list_init(&diagnostics);
+        assert(dfm_run_all(&registry, &shorted, &profile, &diagnostics) >= 1);
+        for (size_t i = 0; i < diagnostic_count(&diagnostics); ++i) {
+            const Diagnostic *d = diagnostic_get(&diagnostics, i);
+            if (d && d->rule_name &&
+                strcmp(d->rule_name, "shorted_two_terminal_component") == 0)
+                saw_short = 1;
+        }
+        assert(saw_short);
+        design_free(&shorted);
+    }
+
     diagnostic_list_free(&diagnostics);
     dfm_registry_free(&registry);
     design_free(&design);

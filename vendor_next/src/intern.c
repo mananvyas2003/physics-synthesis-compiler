@@ -171,7 +171,8 @@ const char *intern_string_n(
     uint64_t hash = hash_string(text, length);
 
     if (needs_resize(interner)) {
-        if (interner_resize(interner, interner->capacity * 2) != 0) {
+        if (interner->capacity > SIZE_MAX / 2 ||
+            interner_resize(interner, interner->capacity * 2) != 0) {
             return NULL;
         }
     }
